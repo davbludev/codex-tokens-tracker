@@ -1,5 +1,6 @@
 mod accounting;
 mod adapter;
+mod aggregates;
 mod commands;
 mod hierarchy;
 mod identity;
@@ -15,7 +16,10 @@ pub fn run() {
             coverage: "Discovering local Codex usage…".into(),
             ..Default::default()
         })))
-        .invoke_handler(tauri::generate_handler![commands::usage_snapshot])
+        .invoke_handler(tauri::generate_handler![
+            commands::usage_snapshot,
+            commands::usage_aggregates
+        ])
         .setup(|app| {
             match app.path().app_data_dir().and_then(|directory| {
                 std::fs::create_dir_all(&directory).map_err(tauri::Error::Io)?;

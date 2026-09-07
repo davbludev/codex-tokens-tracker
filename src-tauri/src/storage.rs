@@ -3,6 +3,7 @@ use crate::{
     adapter::{self, Record, Usage},
     identity, identity_filesystem,
 };
+mod aggregates;
 mod hierarchy;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Serialize;
@@ -80,7 +81,7 @@ impl Store {
         let mut connection = Connection::open(path)?;
         connection.busy_timeout(std::time::Duration::from_secs(3))?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > 5 {
+        if version > 6 {
             return Err(Error::Schema);
         }
         if version == 0 {
@@ -128,6 +129,11 @@ impl Store {
         if version < 5 {
             let tx = connection.transaction()?;
             tx.execute_batch(include_str!("../migrations/005_identity_resolution.sql"))?;
+            tx.commit()?;
+        }
+        if version < 6 {
+            let tx = connection.transaction()?;
+            tx.execute_batch(include_str!("../migrations/006_aggregate_queries.sql"))?;
             tx.commit()?;
         }
         Ok(Self { connection })

@@ -27,6 +27,21 @@ pub fn usage_snapshot(state: tauri::State<'_, State>) -> std::result::Result<Sna
         .map_err(|_| "Usage state is unavailable".into())
 }
 
+#[tauri::command]
+pub async fn usage_aggregates(
+    app: tauri::AppHandle,
+    query: crate::aggregates::Query,
+) -> std::result::Result<crate::aggregates::Response, crate::aggregates::ReadError> {
+    let path = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| crate::aggregates::ReadError::Storage)?
+        .join("usage.sqlite");
+    tauri::async_runtime::spawn_blocking(move || Store::read_aggregates(&path, query))
+        .await
+        .map_err(|_| crate::aggregates::ReadError::Storage)?
+}
+
 fn publish(app: &tauri::AppHandle, snapshot: Snapshot) {
     if let Ok(mut current) = app.state::<State>().0.lock() {
         *current = snapshot.clone();
