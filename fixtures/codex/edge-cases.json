@@ -1,0 +1,76 @@
+{
+  "provenance": "Synthetic contract cases; these are not observations from local sessions.",
+  "replay": {
+    "thread": "synthetic-child",
+    "observations": [
+      {"endpoint": 100, "usage": 100},
+      {"endpoint": 100, "usage": 100}
+    ],
+    "expectedAcceptedUsage": 100,
+    "expectedDuplicates": 1
+  },
+  "conflict": {
+    "observations": [
+      {"endpoint": 100, "usage": 100},
+      {"endpoint": 100, "usage": 90}
+    ],
+    "expected": "conflicting payload: diagnostic, no second delta"
+  },
+  "counterReset": {
+    "observations": [
+      {"endpoint": 100, "usage": 100},
+      {"endpoint": 20, "usage": 20}
+    ],
+    "expected": "unsupported decreasing stream: diagnostic, no negative or repaired delta"
+  },
+  "openingGap": {
+    "observation": {"endpoint": 1000, "usage": 20},
+    "expectedAcceptedUsage": 20,
+    "expected": "retain incomplete coverage; never infer 980 opening tokens"
+  },
+  "legacyOnly": {
+    "info": {"last_token_usage": {"total_tokens": 20}, "total_token_usage": {"total_tokens": 1000}},
+    "expected": "usage unavailable for the modern adapter; preserve diagnostic metadata"
+  },
+  "missingCategory": {
+    "usage": {"input_tokens": 10, "cached_input_tokens": null, "output_tokens": 2, "reasoning_output_tokens": null, "total_tokens": 12},
+    "expected": "total is observable; missing categories and category-dependent cost remain unavailable"
+  },
+  "incompleteLine": {
+    "prefix": "{\"timestamp\":\"2026-01-01T00:00:00Z\",\"type\":\"token_usage_record\",\"payload\":",
+    "suffix": "{}}\n",
+    "expected": "buffer tail, do not advance durable checkpoint; completed unsupported payload is a diagnostic"
+  },
+  "weekly": {
+    "samplesInArrivalOrder": [
+      {"timestamp": "2026-01-01T00:02:00Z", "limit_id": "codex", "position": "secondary", "window_minutes": 10080, "used_percent": 0, "resets_at": null},
+      {"timestamp": "2026-01-01T00:01:00Z", "limit_id": "codex", "position": "primary", "window_minutes": 10080, "used_percent": 97, "resets_at": 1768000000},
+      {"timestamp": "2026-01-01T00:01:00Z", "limit_id": "codex", "position": "primary", "window_minutes": 10080, "used_percent": 97, "resets_at": 1768000000},
+      {"timestamp": "2026-01-01T00:03:00Z", "limit_id": "other", "position": "primary", "window_minutes": 10080, "used_percent": 2.5, "resets_at": null},
+      {"timestamp": "2026-01-01T00:03:00Z", "limit_id": "codex", "position": "primary", "window_minutes": 300, "used_percent": 10, "resets_at": null}
+    ],
+    "expectedCoreWeeklyUniqueObservations": 2,
+    "expectedResetCount": 1,
+    "expected": "sort by source time; keep distinct buckets/windows; primary/secondary position does not identify weekly duration"
+  },
+  "worktrees": {
+    "roots": [
+      {"cwd": "C:\\example\\main", "commonDirectory": "C:\\example\\main\\.git"},
+      {"cwd": "C:\\example\\worktree", "gitdir": "C:\\example\\main\\.git\\worktrees\\worktree", "commondir": "../..", "commonDirectory": "C:\\example\\main\\.git"},
+      {"cwd": "C:\\example\\unresolved", "commonDirectory": null}
+    ],
+    "expectedProjectGroups": 2,
+    "expected": "resolved common-directory identity can merge first two; unresolved root stays separate; no Git commands"
+  },
+  "parentChild": {
+    "sessions": [
+      {"id": "synthetic-root", "parent": null, "direct": 100},
+      {"id": "synthetic-child", "parent": "synthetic-root", "direct": 30},
+      {"id": "synthetic-grandchild", "parent": "synthetic-child", "direct": 5}
+    ],
+    "expectedGlobal": 135,
+    "expectedRootInclusive": 135,
+    "expectedChildInclusive": 35,
+    "expected": "global counts direct usage once; inclusive totals are never summed into global usage"
+  }
+}
