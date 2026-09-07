@@ -17,7 +17,7 @@
 
 ## Desktop updates
 - Owner: `src-tauri/src/commands.rs`; companion: `src-tauri/src/commands/runtime.rs`; entry: `src-tauri/src/lib.rs`.
-- Responsibility: Parent/root native watching, debounced bounded queues, fair discovery/read/promotion/paged-presence work, recovery, and bounded progress/IPC delivery.
+- Responsibility: Parent/root native watching, debounced bounded queues, fair discovery/read/promotion/paged-presence/pricing work, recovery, and bounded progress/IPC delivery.
 - Look here when: Changing live updates or runtime error reporting.
 
 ## Identity resolution

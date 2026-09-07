@@ -2,7 +2,8 @@
 
 `usage_aggregates` accepts a `query` and returns prepared Rust aggregates. The
 existing `usage_snapshot` command and `usage-updated` event are unchanged. No
-pricing, call counts, observation lists, or raw source records are delivered.
+price configurations, call counts, observation lists, or raw source records are
+delivered.
 
 Query kinds are `global`, `session` (with `thread`), `sessions`, `projects`,
 `models`, `children` and `ancestors`. The last two also require `thread`. Every
@@ -37,6 +38,20 @@ unavailable/incomplete sessions, unresolved usage, unknown model/project
 attribution, and source diagnostics. Cached input and reasoning can overlap
 input/output, and cache-write overlap is not established: do not sum categories.
 
+Every summary also contains `estimatedCost: { knownSubtotal, complete }`.
+`knownSubtotal` is a canonical integer string in 10^-12 USD, summed exactly from
+immutable valuations of accepted observations. It is an estimated token cost,
+not an actual charge. Reads never apply current prices to historic usage.
+`complete` is true only when the scope has accepted usage and every accepted
+observation has a valuation. Empty or entirely unpriced scopes return null/false;
+priced zero returns `"0"`. A non-null subtotal with false completeness is an
+explicitly incomplete known cost subtotal. This applies equally to direct,
+inclusive, global, group and full-selection page summaries. Missing prices or
+unsupported pricing semantics retain tokens and do not imply zero cost. Cost
+completeness concerns accepted usage, independently of the coverage fields.
+Model grouping follows current observation attribution, while the amount retains
+its original valuation even if later metadata changes the model attribution.
+
 Each response is one consistent read transaction. `hierarchyPending` and
 `hierarchyRevision` accompany the result. During reconciliation, session direct
 usage is still returned, while inclusive usage and effective parents are
@@ -49,8 +64,18 @@ including unresolved observations; it is not an import-completion timestamp.
 Subsequent pages may observe new ingestion or regrouping. Callers refresh a list
 when its data changes; cursors do not promise a frozen multi-request snapshot.
 
+The runtime resumes durable pricing jobs at startup in bounded batches alongside
+ingestion. Every processed batch, including job completion without observations,
+marks the existing `usage-updated` publication dirty; aggregate consumers should
+refresh on that event. The writer can explicitly request pricing work after a
+save; the price-save IPC is a separate delivery area. Drained pricing work adds
+no polling or idle wakeups. Pricing storage failures use the existing runtime
+failure publication path; absent valuations are normal completeness data.
+
 Queries use a separate read-only SQLite connection on a blocking worker. Only
 bounded pages and SQL summaries enter Rust/IPC. The database may scan the full
 selected history for totals; no latency SLA or million-observation benchmark is
-claimed. SQLite integer overflow or storage failures return `storage` rather
-than a rounded or fabricated subtotal. Invalid page sizes return `invalidQuery`.
+claimed. Cost sums use a checked i128 SQL aggregate over valuation text. Malformed
+valuation amounts, i128 cost overflow, SQLite token integer overflow or storage
+failures return `storage` rather than a rounded or fabricated subtotal. Invalid
+page sizes return `invalidQuery`.

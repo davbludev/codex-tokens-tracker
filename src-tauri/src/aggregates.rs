@@ -79,8 +79,17 @@ pub struct Coverage {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct EstimatedCost {
+    /// Canonical integer in 10^-12 USD. None means no priced accepted usage.
+    pub known_subtotal: Option<String>,
+    pub complete: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Summary {
     pub tokens: Tokens,
+    pub estimated_cost: EstimatedCost,
     pub coverage: Coverage,
     pub observed_at: Option<String>,
     pub observed_sessions: u64,

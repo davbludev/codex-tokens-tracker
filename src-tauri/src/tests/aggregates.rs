@@ -57,6 +57,237 @@ fn total(summary: &Summary) -> Option<&str> {
     summary.tokens.total_tokens.known_tokens.as_deref()
 }
 
+fn price(store: &mut Store, model: &str, rate: &str, seconds: i64) {
+    use crate::pricing::{CacheWritePolicy, PriceInput, ReasoningPolicy};
+    store
+        .save_model_price_at(
+            model,
+            PriceInput {
+                input: rate.into(),
+                cached_input: rate.into(),
+                cache_write: rate.into(),
+                output: rate.into(),
+                reasoning: None,
+                reasoning_policy: ReasoningPolicy::Included,
+                cache_write_policy: CacheWritePolicy::Unknown,
+            },
+            seconds == 0,
+            (seconds, 0),
+        )
+        .unwrap();
+    while store.pricing_work_pending().unwrap() {
+        store.process_pricing_work().unwrap();
+    }
+}
+
+fn cost(summary: &Summary) -> (Option<&str>, bool) {
+    (
+        summary.estimated_cost.known_subtotal.as_deref(),
+        summary.estimated_cost.complete,
+    )
+}
+
+#[test]
+fn aggregates_cost_completeness_conserves_scopes_and_immutable_history() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("cost.sqlite");
+    let mut store = Store::open(&db).unwrap();
+    assert_eq!(cost(&global(&mut store)), (None, false));
+    let root_record = add(
+        &mut store,
+        "root",
+        None,
+        100,
+        Some("alpha"),
+        Some("C:/cost-a"),
+    );
+    add(
+        &mut store,
+        "child",
+        Some("root"),
+        30,
+        Some("beta"),
+        Some("C:/cost-b"),
+    );
+    add(&mut store, "unknown", Some("child"), 5, None, None);
+    settle(&mut store);
+    assert_eq!(cost(&global(&mut store)), (None, false));
+    // Equal category rates count input/output once, despite cached/reasoning overlap.
+    price(&mut store, "alpha", "0.000001", 0);
+    assert_eq!(
+        cost(&session(&mut store, "root").direct),
+        (Some("100"), true)
+    );
+    assert_eq!(
+        cost(session(&mut store, "root").inclusive.as_ref().unwrap()),
+        (Some("100"), false)
+    );
+    price(&mut store, "beta", "0", 0);
+    assert_eq!(
+        cost(&session(&mut store, "child").direct),
+        (Some("0"), true)
+    );
+    assert_eq!(
+        cost(session(&mut store, "child").inclusive.as_ref().unwrap()),
+        (Some("0"), false)
+    );
+    assert_eq!(cost(&session(&mut store, "unknown").direct), (None, false));
+    assert_eq!(cost(&global(&mut store)), (Some("100"), false));
+    for models in [false, true] {
+        let mut after = None;
+        let mut costs = Vec::new();
+        loop {
+            let query = if models {
+                Query::Models {
+                    page: page(1, after),
+                }
+            } else {
+                Query::Projects {
+                    page: page(1, after),
+                }
+            };
+            let groups = match store.aggregates(query).unwrap().data {
+                Data::Projects(p) | Data::Models(p) => p,
+                _ => panic!(),
+            };
+            assert_eq!(cost(&groups.direct), (Some("100"), false));
+            costs.push((
+                groups.items[0].direct.estimated_cost.known_subtotal.clone(),
+                groups.items[0].direct.estimated_cost.complete,
+            ));
+            after = groups.next_cursor;
+            if after.is_none() {
+                break;
+            }
+        }
+        costs.sort();
+        assert_eq!(
+            costs,
+            vec![
+                (None, false),
+                (Some("0".into()), true),
+                (Some("100".into()), true)
+            ]
+        );
+    }
+    for query in [
+        Query::Sessions {
+            page: page(1, None),
+        },
+        Query::Children {
+            thread: "root".into(),
+            page: page(1, None),
+        },
+        Query::Ancestors {
+            thread: "unknown".into(),
+            page: page(1, None),
+        },
+    ] {
+        let Data::Sessions(p) = store.aggregates(query).unwrap().data else {
+            panic!()
+        };
+        let expected = match p.total_items {
+            3 => (Some("100"), false),
+            2 => (Some("100"), true),
+            1 => (Some("0"), true),
+            _ => panic!(),
+        };
+        assert_eq!(cost(&p.direct), expected);
+    }
+    // An edit and model conflict must not revalue the previously priced observation.
+    price(&mut store, "alpha", "999", 1);
+    record_in_store(
+        &mut store,
+        "root",
+        &serde_json::json!({"type":"turn_context","payload":{"turn_id":"root","model":"conflicting"}}),
+    );
+    drop(store);
+    let mut store = Store::open(&db).unwrap();
+    record_in_store(&mut store, "replay", &root_record);
+    settle(&mut store);
+    let Data::Models(groups) = store
+        .aggregates(Query::Models {
+            page: page(50, None),
+        })
+        .unwrap()
+        .data
+    else {
+        panic!()
+    };
+    let unknown = groups
+        .items
+        .iter()
+        .find(|g| g.attribution.id == "unknown:")
+        .unwrap();
+    assert_eq!(cost(&unknown.direct), (Some("100"), false));
+    let response = Store::read_aggregates(&db, Query::Global).unwrap();
+    let wire = serde_json::to_value(response).unwrap();
+    assert_eq!(
+        wire["data"]["data"]["estimatedCost"],
+        serde_json::json!({"knownSubtotal":"100","complete":false})
+    );
+}
+
+#[test]
+fn aggregates_cost_exact_large_values_and_storage_errors() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("exact-cost.sqlite");
+    let mut store = Store::open(&db).unwrap();
+    add(&mut store, "a", None, 100, Some("alpha"), None);
+    add(&mut store, "b", Some("a"), 30, Some("alpha"), None);
+    settle(&mut store);
+    price(&mut store, "alpha", "9223372036854.775807", 0);
+    // 130 tokens times the maximum rate (i64::MAX micro-USD/million).
+    assert_eq!(
+        cost(&global(&mut store)),
+        (Some("1199038364791120854910"), true)
+    );
+    assert_eq!(
+        cost(session(&mut store, "a").inclusive.as_ref().unwrap()),
+        (Some("1199038364791120854910"), true)
+    );
+    // Read-side corruption/range fixtures: these do not change the pricing writer.
+    store
+        .connection()
+        .execute_batch(
+            "DROP TRIGGER immutable_valuation_update; DROP TRIGGER immutable_valuation_delete;",
+        )
+        .unwrap();
+    for bad in [
+        "not-money",
+        "1.5",
+        "-1",
+        "01",
+        "170141183460469231731687303715884105728",
+    ] {
+        store.connection().execute("UPDATE observation_valuations SET amount=? WHERE observation_id=(SELECT MIN(observation_id) FROM observation_valuations)", [bad]).unwrap();
+        assert!(
+            matches!(
+                Store::read_aggregates(&db, Query::Global),
+                Err(ReadError::Storage)
+            ),
+            "{bad}"
+        );
+    }
+    store
+        .connection()
+        .execute(
+            "UPDATE observation_valuations SET amount=?",
+            [i128::MAX.to_string()],
+        )
+        .unwrap();
+    assert!(matches!(
+        store.aggregates(Query::Global),
+        Err(ReadError::Storage)
+    ));
+    // One boundary value remains exact; a missing valuation does not become zero.
+    store.connection().execute("DELETE FROM observation_valuations WHERE observation_id=(SELECT MAX(observation_id) FROM observation_valuations)", []).unwrap();
+    assert_eq!(
+        cost(&global(&mut store)),
+        (Some("170141183460469231731687303715884105727"), false)
+    );
+}
+
 #[test]
 fn aggregates_accept_contiguous_turn_reset_and_conserve_models_after_replay() {
     let temp = tempfile::tempdir().unwrap();
@@ -514,7 +745,8 @@ fn aggregates_merge_only_confirmed_worktrees_and_migrate_read_indexes() {
     assert_eq!(total(&groups.items[0].direct), Some("5"));
     assert_eq!(groups.items[1].attribution.basis, "confirmedRepository");
     assert_eq!(total(&groups.items[1].direct), Some("130"));
-    store.connection().execute_batch("DROP INDEX session_effective_children; DROP INDEX observation_model_bucket; PRAGMA user_version=5;").unwrap();
+    // Restore a v5-shaped fixture, including removal of later pricing schema.
+    store.connection().execute_batch("DROP TABLE pricing_work; DROP TABLE observation_valuations; DROP TABLE model_price_versions; DROP TABLE detected_models; DROP INDEX observation_pricing_model; DROP INDEX session_effective_children; DROP INDEX observation_model_bucket; PRAGMA user_version=5;").unwrap();
     drop(store);
     let mut store = Store::open(&db).unwrap();
     assert_eq!(total(&global(&mut store)), Some("135"));

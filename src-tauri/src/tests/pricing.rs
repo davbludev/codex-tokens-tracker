@@ -71,6 +71,131 @@ fn drain(store: &mut Store) {
 }
 
 #[test]
+fn pricing_runtime_resumes_bounded_batches_and_publishes_without_starving_reads() {
+    use crate::{
+        aggregates::{Data, Query},
+        commands::runtime::Work,
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("runtime-pricing.sqlite");
+    let mut store = Store::open(&db).unwrap();
+    context(&mut store, "history", "priced", Some("alpha"));
+    for sequence in 1..=130 {
+        usage(
+            &mut store,
+            "history",
+            "priced",
+            sequence,
+            "2026-01-01T00:00:01Z",
+        );
+    }
+    store
+        .save_model_price_at("alpha", prices(), true, (0, 0))
+        .unwrap();
+    drop(store);
+    let sessions = temp.path().join("sessions");
+    std::fs::create_dir(&sessions).unwrap();
+    std::fs::write(
+        sessions.join("rollout-large.jsonl"),
+        "{\"type\":\"response_item\",\"payload\":{}}\n".repeat(10000),
+    )
+    .unwrap();
+    let mut store = Store::open(&db).unwrap();
+    let mut work = Work::new(temp.path());
+    let now = std::time::Instant::now();
+    let mut priced = 0;
+    for _ in 0..10 {
+        let changed = work.step(&mut store, now).unwrap();
+        let next: i64 = store
+            .connection()
+            .query_row("SELECT COUNT(*) FROM observation_valuations", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!(next - priced <= 64);
+        if next > priced {
+            // This is the dirty signal consumed by the existing usage-updated publisher.
+            assert!(changed);
+            priced = next;
+            break;
+        }
+    }
+    assert_eq!(priced, 64);
+    assert!(
+        work.batches > 0,
+        "source reads must progress alongside pricing"
+    );
+    assert!(work.busy());
+    let Data::Global(partial) = Store::read_aggregates(&db, Query::Global).unwrap().data else {
+        panic!()
+    };
+    assert_eq!(
+        partial.estimated_cost.known_subtotal.as_deref(),
+        Some("13440000000")
+    ); // 64 * 210,000,000
+    assert!(!partial.estimated_cost.complete);
+    // Restart in the middle of a durable job, then finish through the runtime.
+    drop(store);
+    let mut store = Store::open(&db).unwrap();
+    let mut work = Work::new(temp.path());
+    super::drain_work(&mut work, &mut store, now);
+    assert!(!store.pricing_work_pending().unwrap());
+    let Data::Global(complete) = Store::read_aggregates(&db, Query::Global).unwrap().data else {
+        panic!()
+    };
+    assert_eq!(
+        complete.estimated_cost.known_subtotal.as_deref(),
+        Some("27300000000")
+    ); // 130 * 210,000,000
+    assert!(complete.estimated_cost.complete);
+    let changes = store.connection().total_changes();
+    assert!(!work.step(&mut store, now).unwrap());
+    assert!(!work.busy());
+    assert_eq!(work.deadline(), None);
+    assert_eq!(store.connection().total_changes(), changes);
+}
+
+#[test]
+fn pricing_runtime_requested_empty_work_and_failures_keep_durable_jobs() {
+    use crate::commands::runtime::Work;
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&temp.path().join("runtime-failure.sqlite")).unwrap();
+    context(&mut store, "empty", "empty", Some("alpha"));
+    let now = std::time::Instant::now();
+    let mut work = Work::new(temp.path());
+    super::drain_work(&mut work, &mut store, now);
+    store
+        .save_model_price_at("alpha", prices(), true, (0, 0))
+        .unwrap();
+    work.request_pricing();
+    assert!(work.busy());
+    // No observations examined, but retiring the job must dirty the publication.
+    assert!(work.step(&mut store, now).unwrap());
+    assert!(!store.pricing_work_pending().unwrap());
+    assert!(!work.busy());
+    usage(&mut store, "empty", "empty", 1, "2026-01-01T00:00:01Z");
+    store
+        .save_model_price_at("alpha", prices(), false, (2, 0))
+        .unwrap();
+    store.connection().execute_batch("CREATE TRIGGER fail_pricing_cursor BEFORE UPDATE ON pricing_work BEGIN SELECT RAISE(ABORT, 'pricing interrupted'); END;").unwrap();
+    work.request_pricing();
+    // Propagates to the coordinator's existing fatal diagnostic/publication path.
+    assert!(work.step(&mut store, now).is_err());
+    assert!(store.pricing_work_pending().unwrap());
+    store
+        .connection()
+        .execute_batch("DROP TRIGGER fail_pricing_cursor;")
+        .unwrap();
+    let mut work = Work::new(temp.path());
+    super::drain_work(&mut work, &mut store, now);
+    assert!(!store.pricing_work_pending().unwrap());
+    assert_eq!(
+        store.observation_valuation(1).unwrap().unwrap().amount,
+        "210000000"
+    );
+}
+
+#[test]
 fn pricing_decimal_validation_and_exact_subtraction() {
     let original = tokens([100, 20, 0, 40, 10, 140]);
     assert_eq!(

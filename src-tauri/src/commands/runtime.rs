@@ -21,6 +21,7 @@ pub struct Work {
     queued: HashSet<PathBuf>,
     debounce: HashMap<PathBuf, Instant>,
     reconcile: bool,
+    pricing: bool,
     lane: usize,
     recovery: bool,
     recovery_notice: bool,
@@ -47,6 +48,7 @@ impl Work {
             queued: HashSet::new(),
             debounce: HashMap::new(),
             reconcile: true,
+            pricing: true,
             lane: 0,
             recovery: false,
             recovery_notice: false,
@@ -69,6 +71,11 @@ impl Work {
     pub fn failed(&mut self, message: String) {
         self.diagnostic = Some(message);
         self.recovery_notice = false;
+    }
+
+    /// The writer calls this after saving a price; startup also resumes durable jobs.
+    pub fn request_pricing(&mut self) {
+        self.pricing = true;
     }
 
     fn enqueue(&mut self, path: PathBuf) {
@@ -135,6 +142,7 @@ impl Work {
         !self.discovery.is_empty()
             || !self.reads.is_empty()
             || self.reconcile
+            || self.pricing
             || self.recovery
             || self.sweep.is_some()
             || self.sweep_requested
@@ -171,9 +179,9 @@ impl Work {
             self.discovery.push_back(Discovery::new(self.roots.clone()));
             self.recovery = false;
         }
-        for _ in 0..4 {
+        for _ in 0..5 {
             let lane = self.lane;
-            self.lane = (self.lane + 1) % 4;
+            self.lane = (self.lane + 1) % 5;
             match lane {
                 0 if !self.discovery.is_empty() && self.reads.len() <= QUEUE_LIMIT - 64 => {
                     let discovery = self.discovery.front_mut().unwrap();
@@ -238,6 +246,13 @@ impl Work {
                                 page.last().map(|(path, _)| path.clone());
                         }
                     }
+                    return Ok(true);
+                }
+                4 if self.pricing => {
+                    // Even a zero-observation batch may retire durable jobs. Publish
+                    // conservatively, and stop scheduling once the queue is drained.
+                    store.process_pricing_work()?;
+                    self.pricing = store.pricing_work_pending()?;
                     return Ok(true);
                 }
                 _ => (),

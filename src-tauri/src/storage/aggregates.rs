@@ -1,7 +1,10 @@
 //! Read-side aggregation stays in SQLite; only bounded prepared rows leave storage.
 use super::{hierarchy, Store};
 use crate::aggregates::{self as dto, ReadError};
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{
+    functions::{Aggregate, Context, FunctionFlags},
+    params, Connection, OptionalExtension, Transaction,
+};
 use std::path::Path;
 
 const PROJECTS: &str = "project_sessions AS (
@@ -57,6 +60,14 @@ impl Store {
     }
 
     pub fn aggregates(&mut self, query: dto::Query) -> Result<dto::Response, ReadError> {
+        self.connection
+            .create_aggregate_function(
+                "estimated_cost_sum",
+                1,
+                FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+                CostSum,
+            )
+            .map_err(|_| ReadError::Storage)?;
         let tx = self
             .connection
             .transaction()
@@ -152,6 +163,18 @@ fn summary(
             },
         )
         .map_err(|_| ReadError::Storage)?;
+    let estimated_cost = tx.query_row(
+        &format!("{cte} SELECT estimated_cost_sum(v.amount),COUNT(*),COUNT(v.observation_id) FROM usage o LEFT JOIN observation_valuations v ON v.observation_id=o.id WHERE o.accepted=1 AND (?1 IS NULL OR 1)"),
+        [key],
+        |row| {
+            let accepted: i64 = row.get(1)?;
+            let priced: i64 = row.get(2)?;
+            Ok(dto::EstimatedCost {
+                known_subtotal: row.get(0)?,
+                complete: accepted > 0 && accepted == priced,
+            })
+        },
+    ).map_err(|_| ReadError::Storage)?;
     let (observed_sessions, placeholders, incomplete_sessions, unavailable_sessions, unattributed_project): (u64,u64,u64,u64,bool) = tx.query_row(&format!("{cte} SELECT
         COUNT(CASE WHEN is_placeholder=0 THEN 1 END), COUNT(CASE WHEN is_placeholder=1 THEN 1 END),
         COUNT(CASE WHEN is_placeholder=0 AND incomplete=1 THEN 1 END),
@@ -165,6 +188,7 @@ fn summary(
     let observed_at = tx.query_row(&format!("{cte} SELECT timestamp FROM usage WHERE time_seconds IS NOT NULL AND time_nanos IS NOT NULL AND (?1 IS NULL OR 1) ORDER BY time_seconds DESC,time_nanos DESC,thread_id ASC LIMIT 1"), [key], |r| r.get(0)).optional().map_err(|_| ReadError::Storage)?;
     Ok(dto::Summary {
         tokens,
+        estimated_cost,
         observed_sessions,
         placeholders,
         observed_at,
@@ -177,6 +201,41 @@ fn summary(
             source_diagnostics,
         },
     })
+}
+
+/// SQLite's numeric SUM would coerce durable i128 TEXT values to i64 or float.
+/// Keep a single checked accumulator inside the query and return only its string.
+struct CostSum;
+impl Aggregate<Option<i128>, Option<String>> for CostSum {
+    fn init(&self, _: &mut Context<'_>) -> rusqlite::Result<Option<i128>> {
+        Ok(None)
+    }
+
+    fn step(&self, ctx: &mut Context<'_>, sum: &mut Option<i128>) -> rusqlite::Result<()> {
+        let Some(encoded) = ctx.get::<Option<String>>(0)? else {
+            return Ok(());
+        };
+        let invalid = || {
+            rusqlite::Error::UserFunctionError(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid or overflowing estimated cost subtotal",
+            )))
+        };
+        let amount: i128 = encoded.parse().map_err(|_| invalid())?;
+        if amount < 0 || amount.to_string() != encoded {
+            return Err(invalid());
+        }
+        *sum = Some(sum.unwrap_or(0).checked_add(amount).ok_or_else(invalid)?);
+        Ok(())
+    }
+
+    fn finalize(
+        &self,
+        _: &mut Context<'_>,
+        sum: Option<Option<i128>>,
+    ) -> rusqlite::Result<Option<String>> {
+        Ok(sum.flatten().map(|amount| amount.to_string()))
+    }
 }
 
 fn attribution(id: String) -> dto::Attribution {
