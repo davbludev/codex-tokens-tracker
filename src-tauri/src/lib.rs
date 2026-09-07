@@ -5,6 +5,7 @@ mod commands;
 mod hierarchy;
 mod identity;
 mod identity_filesystem;
+mod pricing;
 mod source;
 mod storage;
 

@@ -5,6 +5,7 @@ use crate::{
 };
 mod aggregates;
 mod hierarchy;
+pub(crate) mod pricing;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Serialize;
 use std::path::Path;
@@ -25,6 +26,8 @@ pub enum Error {
     RecoveryMetadata,
     #[error("Database schema is newer than this application")]
     Schema,
+    #[error(transparent)]
+    Pricing(#[from] crate::pricing::Error),
 }
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -81,7 +84,7 @@ impl Store {
         let mut connection = Connection::open(path)?;
         connection.busy_timeout(std::time::Duration::from_secs(3))?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > 6 {
+        if version > 7 {
             return Err(Error::Schema);
         }
         if version == 0 {
@@ -134,6 +137,11 @@ impl Store {
         if version < 6 {
             let tx = connection.transaction()?;
             tx.execute_batch(include_str!("../migrations/006_aggregate_queries.sql"))?;
+            tx.commit()?;
+        }
+        if version < 7 {
+            let tx = connection.transaction()?;
+            tx.execute_batch(include_str!("../migrations/007_model_pricing.sql"))?;
             tx.commit()?;
         }
         Ok(Self { connection })
@@ -441,6 +449,9 @@ fn apply_record(
             }
         }
         Ok(Record::Context(context)) => {
+            // Preserve each detected name before conflict resolution can erase
+            // its current attribution. Unknown remains nonconfigurable.
+            pricing::detect_model(tx, context.model.as_deref())?;
             let thread: Option<String> =
                 tx.query_row("SELECT thread_id FROM sources WHERE path=?", [path], |r| {
                     r.get(0)
@@ -828,6 +839,7 @@ fn reconcile_candidate(tx: &Transaction<'_>, id: i64) -> Result<bool> {
         accounting::assess_candidate(candidate.facts(), &facts, unknown_anchor)
     {
         tx.execute("UPDATE observations SET state='accepted',accepted=1,total=?,diagnostic=CASE WHEN diagnostic=? THEN NULL ELSE diagnostic END WHERE id=? AND state='pending'",params![candidate.usage.usage.total_tokens.value(),GAP,candidate.id])?;
+        pricing::value_observation(tx, candidate.id)?;
         if incomplete_opening {
             tx.execute(
                 "UPDATE sessions SET incomplete=1 WHERE thread_id=?",
