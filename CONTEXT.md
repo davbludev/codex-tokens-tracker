@@ -17,6 +17,18 @@ The aggregate of locally observed session usage across projects, counting each s
 **Project usage**:
 The aggregate of locally observed session usage attributed to a project, counting each session once.
 
+**Location-derived bucket**:
+A grouping supported by one unambiguous observed workspace root or working directory; it does not by itself confirm repository identity.
+
+**Confirmed repository identity**:
+A shared canonical Git common directory established by local administrative path metadata, including across worktrees.
+
+**Effective parent**:
+A parent supported by agreeing evidence whose relationship is neither self-referential nor part of a cycle. An unresolved parent's own ancestry does not invalidate its descendants.
+
+**Missing-parent placeholder**:
+A session referenced by parent evidence that has not itself been observed; it carries no invented usage or project membership.
+
 **Estimated token cost**:
 The valuation of token usage at user-configured prices, rather than an actual charge.
 _Avoid_: Actual cost, amount charged, bill

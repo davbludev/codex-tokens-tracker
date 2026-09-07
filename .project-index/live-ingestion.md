@@ -20,6 +20,16 @@
 - Responsibility: Parent/root native watching, debounced bounded queues, fair discovery/read/promotion/paged-presence work, recovery, and bounded progress/IPC delivery.
 - Look here when: Changing live updates or runtime error reporting.
 
+## Identity resolution
+- Owner: `src-tauri/src/identity.rs`; filesystem boundary: `src-tauri/src/identity_filesystem.rs`.
+- Responsibility: Resolve location-derived buckets from evidence; confirm repository identity using bounded Git administrative path metadata.
+- Look here when: Changing location ambiguity or worktree identity.
+
+## Hierarchy resolution
+- Owner: `src-tauri/src/hierarchy.rs`; persistence: `src-tauri/src/storage/hierarchy.rs`.
+- Responsibility: Classify effective parents through durable bounded forward walks, placeholders, revisions, and a transactional readiness gate.
+- Look here when: Changing parent agreement, cycles, or resumable graph resolution.
+
 ## Presentation
 - Owner: `src/main.tsx`; stylesheet: `src/style.css`.
 - Responsibility: Display direct tokens, observation time, coverage, and diagnostics.

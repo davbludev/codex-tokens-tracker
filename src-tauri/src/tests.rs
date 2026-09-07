@@ -145,7 +145,7 @@ fn recovery_v2_migration_and_snapshot_query_plan() {
             .connection()
             .query_row::<i64, _, _>("PRAGMA user_version", [], |r| r.get(0))
             .unwrap(),
-        4
+        5
     );
     assert_eq!(
         store.snapshot().unwrap().direct_tokens.as_deref(),
@@ -1094,6 +1094,7 @@ fn metadata_candidates_preserve_usage_provenance_and_ambiguity() {
         "prompt":"FORBIDDEN", "instructions":"FORBIDDEN"
     }});
     record_in_store(&mut store, "source", &metadata);
+    settle(&mut store);
     let state = |store: &Store| {
         store.connection().query_row("SELECT parent_thread_id,parent_state,location_state FROM sessions WHERE thread_id='root-active'", [], |r| Ok((r.get::<_,Option<String>>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).unwrap()
     };
@@ -1116,6 +1117,7 @@ fn metadata_candidates_preserve_usage_provenance_and_ambiguity() {
         &serde_json::json!({"type":"turn_context","payload":{"turn_id":"other-turn","cwd":"C:/workspace/b","workspace_roots":["C:/workspace/b","C:/workspace/c"]}}),
     );
     record_in_store(&mut store, "source", &historical_record(2));
+    settle(&mut store);
     assert_eq!(totals(&store), (2 * 26587, 0, 2));
     assert_eq!(
         state(&store),
@@ -1180,6 +1182,221 @@ fn metadata_candidates_preserve_usage_provenance_and_ambiguity() {
                 .get(0))
             .unwrap(),
         1
+    );
+}
+
+#[test]
+fn identity_persistence_keeps_direct_usage_placeholders_and_location_basis() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("identity.sqlite");
+    let root = temp.path().join("workspace");
+    let worktree = temp.path().join("worktree");
+    std::fs::create_dir_all(root.join(".git/worktrees/linked")).unwrap();
+    std::fs::create_dir_all(&worktree).unwrap();
+    std::fs::write(
+        worktree.join(".git"),
+        format!("gitdir: {}", root.join(".git/worktrees/linked").display()),
+    )
+    .unwrap();
+    std::fs::write(root.join(".git/worktrees/linked/commondir"), "../..").unwrap();
+    let mut store = Store::open(&db).unwrap();
+    record_in_store(
+        &mut store,
+        "child",
+        &serde_json::json!({"type":"session_meta","payload":{"id":"root-active","parent_thread_id":"late-parent","cwd":root.join("src"),"workspace_roots":[root]}}),
+    );
+    record_in_store(&mut store, "child", &historical_record(1));
+    assert_eq!(
+        store.effective_parent("root-active"),
+        Err(crate::hierarchy::ReadError::HierarchyPending)
+    );
+    assert_eq!(
+        store.snapshot().unwrap().direct_tokens.as_deref(),
+        Some("26587")
+    );
+    settle(&mut store);
+    assert_eq!(
+        store.effective_parent("root-active").unwrap(),
+        Some("late-parent".into())
+    );
+    assert_eq!(
+        store
+            .connection()
+            .query_row::<i64, _, _>(
+                "SELECT is_placeholder FROM sessions WHERE thread_id='late-parent'",
+                [],
+                |r| r.get(0)
+            )
+            .unwrap(),
+        1
+    );
+    record_in_store(
+        &mut store,
+        "late",
+        &serde_json::json!({"type":"session_meta","payload":{"id":"late-parent"}}),
+    );
+    record_in_store(
+        &mut store,
+        "worktree",
+        &serde_json::json!({"type":"session_meta","payload":{"id":"other","cwd":worktree}}),
+    );
+    settle(&mut store);
+    assert_eq!(
+        store
+            .connection()
+            .query_row::<i64, _, _>(
+                "SELECT is_placeholder FROM sessions WHERE thread_id='late-parent'",
+                [],
+                |r| r.get(0)
+            )
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        store
+            .connection()
+            .query_row::<Option<String>, _, _>(
+                "SELECT location_path FROM sessions WHERE thread_id='late-parent'",
+                [],
+                |r| r.get(0)
+            )
+            .unwrap(),
+        None
+    );
+    assert_eq!(store.connection().query_row::<i64,_,_>("SELECT COUNT(DISTINCT repository_common_directory) FROM sessions WHERE thread_id IN ('root-active','other')",[],|r|r.get(0)).unwrap(),1);
+    assert_eq!(store.connection().query_row::<i64,_,_>("SELECT COUNT(DISTINCT location_path) FROM sessions WHERE thread_id IN ('root-active','other')",[],|r|r.get(0)).unwrap(),2);
+    let evidence: i64 = store
+        .connection()
+        .query_row("SELECT COUNT(*) FROM metadata_evidence", [], |r| r.get(0))
+        .unwrap();
+    drop(store);
+    let mut store = Store::open(&db).unwrap();
+    assert_eq!(
+        store.effective_parent("root-active").unwrap(),
+        Some("late-parent".into())
+    );
+    assert_eq!(
+        store
+            .connection()
+            .query_row::<i64, _, _>("SELECT COUNT(*) FROM metadata_evidence", [], |r| r.get(0))
+            .unwrap(),
+        evidence
+    );
+    record_in_store(
+        &mut store,
+        "child",
+        &serde_json::json!({"type":"turn_context","payload":{"turn_id":"changed","cwd":temp.path().join("elsewhere")}}),
+    );
+    assert_eq!(
+        store
+            .connection()
+            .query_row::<Option<String>, _, _>(
+                "SELECT location_path FROM sessions WHERE thread_id='root-active'",
+                [],
+                |r| r.get(0)
+            )
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        store
+            .connection()
+            .query_row::<Option<String>, _, _>(
+                "SELECT repository_common_directory FROM sessions WHERE thread_id='root-active'",
+                [],
+                |r| r.get(0)
+            )
+            .unwrap(),
+        None
+    );
+    assert_eq!(totals(&store), (26587, 0, 1));
+}
+
+#[test]
+fn identity_migration_bootstrap_is_resumable_and_legacy_parent_stays_unresolved() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("legacy-identity.sqlite");
+    let connection = rusqlite::Connection::open(&db).unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/001_initial.sql"))
+        .unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/002_resumable_sources.sql"))
+        .unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/003_snapshot_chronology.sql"))
+        .unwrap();
+    for n in 0..75 {
+        connection
+            .execute(
+                "INSERT INTO sessions(thread_id,metadata) VALUES(?,?)",
+                rusqlite::params![
+                    format!("n{n:03}"),
+                    serde_json::json!({"parent_thread_id":format!("p{n:03}")}).to_string()
+                ],
+            )
+            .unwrap();
+    }
+    connection
+        .execute_batch(include_str!("../migrations/004_metadata_evidence.sql"))
+        .unwrap();
+    drop(connection);
+    let mut store = Store::open(&db).unwrap();
+    assert_eq!(
+        store.effective_parent("n000"),
+        Err(crate::hierarchy::ReadError::HierarchyPending)
+    );
+    assert!(store.reconcile_pending().unwrap());
+    drop(store);
+    let mut store = Store::open(&db).unwrap();
+    settle(&mut store);
+    assert_eq!(store.effective_parent("n000").unwrap(), None);
+    assert_eq!(
+        store
+            .connection()
+            .query_row::<i64, _, _>(
+                "SELECT COUNT(*) FROM sessions WHERE parent_state='legacy'",
+                [],
+                |r| r.get(0)
+            )
+            .unwrap(),
+        75
+    );
+    assert_eq!(
+        store
+            .connection()
+            .query_row::<i64, _, _>(
+                "SELECT COUNT(*) FROM sessions WHERE is_placeholder=1",
+                [],
+                |r| r.get(0)
+            )
+            .unwrap(),
+        75
+    );
+    record_in_store(
+        &mut store,
+        "current",
+        &serde_json::json!({"type":"session_meta","payload":{"id":"n000","parent_thread_id":"p000"}}),
+    );
+    settle(&mut store);
+    assert_eq!(store.effective_parent("n000").unwrap(), Some("p000".into()));
+    record_in_store(
+        &mut store,
+        "conflict",
+        &serde_json::json!({"type":"session_meta","payload":{"id":"n001","parent_thread_id":"different"}}),
+    );
+    settle(&mut store);
+    assert_eq!(store.effective_parent("n001").unwrap(), None);
+    assert_eq!(
+        store
+            .connection()
+            .query_row::<String, _, _>(
+                "SELECT parent_state FROM sessions WHERE thread_id='n001'",
+                [],
+                |r| r.get(0)
+            )
+            .unwrap(),
+        "ambiguous"
     );
 }
 
@@ -1692,7 +1909,7 @@ fn version_one_migration_preserves_usage_and_promotes_its_pending_gap() {
         .connection()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
     assert_eq!(totals(&store), (4 * 26587, 0, 4));
 }
 

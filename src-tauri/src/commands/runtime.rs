@@ -12,7 +12,7 @@ use std::{
 pub const DEBOUNCE: Duration = Duration::from_millis(75);
 const QUEUE_LIMIT: usize = 512;
 
-/// Bounded cooperative units: directory entries, one file batch, then promotion.
+/// Bounded cooperative units: directory entries, one file batch, then accounting/hierarchy work.
 /// Only concrete source events schedule recovery; an idle coordinator has no work.
 pub struct Work {
     pub roots: Vec<PathBuf>,

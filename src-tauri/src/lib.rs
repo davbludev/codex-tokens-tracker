@@ -1,6 +1,9 @@
 mod accounting;
 mod adapter;
 mod commands;
+mod hierarchy;
+mod identity;
+mod identity_filesystem;
 mod source;
 mod storage;
 

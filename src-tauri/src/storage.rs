@@ -1,7 +1,9 @@
 use crate::{
     accounting,
     adapter::{self, Record, Usage},
+    identity, identity_filesystem,
 };
+mod hierarchy;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Serialize;
 use std::path::Path;
@@ -78,7 +80,7 @@ impl Store {
         let mut connection = Connection::open(path)?;
         connection.busy_timeout(std::time::Duration::from_secs(3))?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > 4 {
+        if version > 5 {
             return Err(Error::Schema);
         }
         if version == 0 {
@@ -121,6 +123,11 @@ impl Store {
         if version < 4 {
             let tx = connection.transaction()?;
             tx.execute_batch(include_str!("../migrations/004_metadata_evidence.sql"))?;
+            tx.commit()?;
+        }
+        if version < 5 {
+            let tx = connection.transaction()?;
+            tx.execute_batch(include_str!("../migrations/005_identity_resolution.sql"))?;
             tx.commit()?;
         }
         Ok(Self { connection })
@@ -304,13 +311,39 @@ impl Store {
     pub fn reconcile_pending(&mut self) -> Result<bool> {
         let tx = self.connection.transaction()?;
         promote(&tx, PROMOTION_LIMIT)?;
-        let remains = tx.query_row(
+        hierarchy::advance(&tx)?;
+        let accounting_remains: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM reconciliation_work)",
             [],
             |r| r.get(0),
         )?;
+        let remains = accounting_remains || hierarchy::pending(&tx)?;
         tx.commit()?;
         Ok(remains)
+    }
+
+    /// Future hierarchy consumers must gate readiness and consume edges in one read transaction.
+    /// Direct usage deliberately does not depend on this graph's readiness.
+    pub fn effective_parent(
+        &mut self,
+        thread: &str,
+    ) -> std::result::Result<Option<String>, crate::hierarchy::ReadError> {
+        use crate::hierarchy::ReadError;
+        let tx = self
+            .connection
+            .transaction()
+            .map_err(|_| ReadError::Storage)?;
+        if hierarchy::pending(&tx).map_err(|_| ReadError::Storage)? {
+            return Err(ReadError::HierarchyPending);
+        }
+        tx.query_row(
+            "SELECT parent_thread_id FROM sessions WHERE thread_id=?",
+            [thread],
+            |r| r.get(0),
+        )
+        .optional()
+        .map(|value| value.flatten())
+        .map_err(|_| ReadError::Storage)
     }
 
     pub fn snapshot(&self) -> Result<Snapshot> {
@@ -357,7 +390,7 @@ fn apply_record(
             if existing.as_ref().is_some_and(|id| id != &meta.id) {
                 diagnostic(&tx, path, "Conflicting direct session identity", true)?;
             } else {
-                tx.execute("INSERT INTO sessions(thread_id, metadata) VALUES(?,?) ON CONFLICT(thread_id) DO UPDATE SET metadata=COALESCE(sessions.metadata,excluded.metadata)", params![meta.id, encoded])?;
+                tx.execute("INSERT INTO sessions(thread_id, metadata) VALUES(?,?) ON CONFLICT(thread_id) DO UPDATE SET metadata=COALESCE(sessions.metadata,excluded.metadata),is_placeholder=0", params![meta.id, encoded])?;
                 tx.execute(
                     "UPDATE sources SET thread_id=? WHERE path=?",
                     params![meta.id, path],
@@ -491,6 +524,9 @@ fn evidence(
         return Ok(());
     }
     tx.execute("INSERT OR IGNORE INTO metadata_evidence(thread_id,kind,value,origin,turn_id,source_path,source_generation,source_offset) SELECT ?,?,?,?,?,path,generation,? FROM sources WHERE path=?", params![thread,kind,value,origin,turn,offset,path])?;
+    if kind == "parent" {
+        hierarchy::placeholder(tx, value)?;
+    }
     Ok(())
 }
 
@@ -525,7 +561,29 @@ fn location_evidence(
 }
 
 fn refresh_attribution(tx: &Transaction<'_>, thread: &str) -> Result<()> {
-    tx.execute("UPDATE sessions SET parent_thread_id=(SELECT CASE WHEN COUNT(DISTINCT value)=1 THEN MIN(value) END FROM metadata_evidence WHERE thread_id=?1 AND kind='parent'), parent_state=(SELECT CASE COUNT(DISTINCT value) WHEN 0 THEN 'unavailable' WHEN 1 THEN 'available' ELSE 'ambiguous' END FROM metadata_evidence WHERE thread_id=?1 AND kind='parent'), location_state=(SELECT CASE COUNT(DISTINCT value) WHEN 0 THEN 'unavailable' WHEN 1 THEN 'available' ELSE 'ambiguous' END FROM metadata_evidence WHERE thread_id=?1 AND kind IN ('cwd','workspace_root')) WHERE thread_id=?1", [thread])?;
+    hierarchy::refresh_candidate(tx, thread)?;
+    refresh_location(tx, thread)?;
+    Ok(())
+}
+
+fn refresh_location(tx: &Transaction<'_>, thread: &str) -> Result<()> {
+    let evidence: Vec<(String,String)> = tx.prepare("SELECT DISTINCT kind,value FROM metadata_evidence WHERE thread_id=? AND kind IN ('cwd','workspace_root') ORDER BY kind,value LIMIT ?")?
+        .query_map(params![thread,identity::MAX_LOCATION_CANDIDATES as i64 + 1], |r| Ok((r.get(0)?,r.get(1)?)))?.collect::<std::result::Result<_,_>>()?;
+    let mut cwds = Vec::new();
+    let mut roots = Vec::new();
+    for (kind, value) in evidence {
+        if kind == "cwd" {
+            cwds.push(value);
+        } else {
+            roots.push(value);
+        }
+    }
+    let location = identity::resolve_location(&cwds, &roots);
+    let proof = location
+        .path
+        .as_deref()
+        .map(|path| identity_filesystem::resolve_repository(Path::new(path)));
+    tx.execute("UPDATE sessions SET location_path=?,location_state=?,repository_common_directory=?,repository_state=? WHERE thread_id=?", params![location.path,location.state,proof.as_ref().and_then(|proof|proof.common_directory.as_deref()),proof.as_ref().map_or("unresolved",|proof|proof.state),thread])?;
     Ok(())
 }
 
@@ -660,7 +718,7 @@ fn ingest_usage(
         return Ok(());
     }
     tx.execute(
-        "INSERT OR IGNORE INTO sessions(thread_id) VALUES(?)",
+        "INSERT INTO sessions(thread_id) VALUES(?) ON CONFLICT(thread_id) DO UPDATE SET is_placeholder=0",
         [&usage.thread_id],
     )?;
     tx.execute(
