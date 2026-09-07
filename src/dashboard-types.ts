@@ -34,6 +34,7 @@ export type WeeklyEstimate = {
   estimatedFullWeekUsd: string | null;
   unavailableReason: UnavailableReason | null;
 };
+export type HistoricalCycle = WeeklyCycle & { estimate: WeeklyEstimate; tokens: GlobalSummary["tokens"] | null };
 export type WeeklySummary = {
   evaluatedAt: ObservationTime;
   currentCycle: WeeklyCycle | null;
@@ -42,7 +43,7 @@ export type WeeklySummary = {
   recent: WeeklyEstimate;
   unmatchedCost: EstimatedCost | null;
   unmatchedCostStart: ObservationTime | null;
-  history: WeeklyCycle[];
+  history: HistoricalCycle[];
   nextCursor: string | null;
   excludedSamples: number;
   sessionWeeklyPercentageImpact: string | null;

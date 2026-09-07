@@ -25,6 +25,7 @@ pub fn run() {
             commands::usage_snapshot,
             commands::usage_aggregates,
             commands::usage_weekly,
+            commands::usage_weekly_models,
             commands::usage_dashboard,
             commands::pricing::pricing_models,
             commands::pricing::save_model_price

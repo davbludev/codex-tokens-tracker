@@ -177,50 +177,59 @@ fn summary_with_params(
     summary_from_cte(tx, &cte, parameters)
 }
 
+pub(super) fn token_fields() -> String {
+    // json_extract operates only on the durable allowlisted projection. No observation
+    // list or normalized JSON is loaded into Rust or sent across IPC.
+    let categories = [
+        "o.total",
+        "json_extract(o.normalized,'$.usage.input_tokens')",
+        "json_extract(o.normalized,'$.usage.cached_input_tokens')",
+        "json_extract(o.normalized,'$.usage.cache_write_input_tokens')",
+        "json_extract(o.normalized,'$.usage.output_tokens')",
+        "json_extract(o.normalized,'$.usage.reasoning_output_tokens')",
+    ];
+    categories
+        .iter()
+        .map(|field| format!("SUM({field}),COUNT({field})"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+pub(super) fn row_tokens(
+    row: &rusqlite::Row<'_>,
+    offset: usize,
+    accepted: i64,
+) -> rusqlite::Result<dto::Tokens> {
+    let category = |index| -> rusqlite::Result<dto::Category> {
+        Ok(dto::Category::from_sum(
+            row.get(offset + index)?,
+            row.get(offset + index + 1)?,
+            accepted,
+        ))
+    };
+    Ok(dto::Tokens {
+        total_tokens: category(0)?,
+        input_tokens: category(2)?,
+        cached_input_tokens: category(4)?,
+        cache_write_tokens: category(6)?,
+        output_tokens: category(8)?,
+        reasoning_tokens: category(10)?,
+    })
+}
+
 fn summary_from_cte(
     tx: &Transaction<'_>,
     cte: &str,
     parameters: impl rusqlite::Params + Clone,
 ) -> Result<dto::Summary, ReadError> {
-    // json_extract operates only on the durable allowlisted projection. No observation
-    // list or normalized JSON is loaded into Rust or sent across IPC.
-    let categories = [
-        "total",
-        "json_extract(normalized,'$.usage.input_tokens')",
-        "json_extract(normalized,'$.usage.cached_input_tokens')",
-        "json_extract(normalized,'$.usage.cache_write_input_tokens')",
-        "json_extract(normalized,'$.usage.output_tokens')",
-        "json_extract(normalized,'$.usage.reasoning_output_tokens')",
-    ];
-    let fields = categories
-        .iter()
-        .map(|field| format!("SUM({field}),COUNT({field})"))
-        .collect::<Vec<_>>()
-        .join(",");
+    let fields = token_fields();
     let tokens = tx
         .query_row(
             &format!(
-                "{cte} SELECT COUNT(*),{fields} FROM usage WHERE accepted=1 AND (?1 IS NULL OR 1)"
+                "{cte} SELECT COUNT(*),{fields} FROM usage o WHERE accepted=1 AND (?1 IS NULL OR 1)"
             ),
             parameters.clone(),
-            |row| {
-                let accepted: i64 = row.get(0)?;
-                let category = |column| -> rusqlite::Result<dto::Category> {
-                    Ok(dto::Category::from_sum(
-                        row.get(column)?,
-                        row.get(column + 1)?,
-                        accepted,
-                    ))
-                };
-                Ok(dto::Tokens {
-                    total_tokens: category(1)?,
-                    input_tokens: category(3)?,
-                    cached_input_tokens: category(5)?,
-                    cache_write_tokens: category(7)?,
-                    output_tokens: category(9)?,
-                    reasoning_tokens: category(11)?,
-                })
-            },
+            |row| row_tokens(row, 1, row.get(0)?),
         )
         .map_err(|_| ReadError::Storage)?;
     let estimated_cost = tx.query_row(

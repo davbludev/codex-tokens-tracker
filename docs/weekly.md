@@ -4,7 +4,7 @@
 It evaluates a consistent read-only SQLite transaction on a blocking worker.
 `evaluatedAt` is the query clock, not ingestion time. Refresh on `usage-updated`
 and as time advances when displaying the recent estimate. The existing cached
-snapshot and event payload are unchanged. Dashboard presentation belongs to #8.
+snapshot and event payload are unchanged.
 
 Only the exact `codex` bucket with duration `10080` minutes participates.
 Other buckets and durations remain distinct stored metadata. Position and reset
@@ -33,6 +33,30 @@ currently retained evidence. Earlier imports can legitimately revise derived
 cycles. No cycle table is rewritten or discarded. `history` pages completed
 cycles newest first, separately from the current cycle. Pages are bounded, and
 their cursors are exclusive; subsequent requests can see new source evidence.
+
+Each history item retains the existing cycle fields at the top level and adds
+`estimate` and `tokens`. The estimate is exactly the overall estimate from the
+final comparable segment immediately before the next detected reset. An earlier
+ambiguity can recover, so `hasAmbiguousObservations` can be true while a narrower
+estimate is available. First/last observed cycle bounds are distinct from the
+estimate's compared bounds. A one-sample segment has unavailable estimates and
+null tokens. Available tokens cover the same start-exclusive/end-inclusive
+interval as cost, with the shared category availability semantics (an empty
+interval has unavailable token categories but complete zero cost).
+
+`usage_weekly_models` accepts
+`query: { cycleKey: string, page: { after: null | nextCursor, limit: 1..50 } }`.
+The canonical cycle key is resolved against completed cycles in the same read
+transaction as the breakdown; clients cannot supply interval boundaries. It
+returns null when the key is no longer a completed cycle, otherwise
+`{ cycleKey, estimate, items, nextCursor }`. An existing cycle with no comparable
+interval returns its unavailable estimate and an empty model page. Each item
+contains `{ id, model, tokens, estimatedCost }`, where `model` can be null.
+Groups use accepted observation model attribution and stored valuations for the
+matched interval, never historical valuation model names or apportioned quota.
+IDs are `model:<name>` and `unknown:`. Binary lexical ordering and an exclusive
+cursor yield at most 50 items; SQL groups the selected interval and reads one
+extra group to detect a next page. No all-model list is collected in Rust.
 
 Overall estimates use the first and last trustworthy observations in the current
 comparable segment. Recent cost per weekly percentage point uses the earliest

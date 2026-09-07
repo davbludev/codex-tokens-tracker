@@ -1,0 +1,10 @@
+.weekly-history h3 { margin: 16px 0 8px; }
+.weekly-history .session-categories { margin: 8px 0; }
+.weekly-history dd { margin: 3px 0 0; overflow-wrap: anywhere; }
+.weekly-history dt { color: #aebccc; }
+.weekly-history th button { text-align: left; overflow-wrap: anywhere; }
+.weekly-history tr[aria-selected="true"] { background: #1c2c3f; }
+.weekly-history .coverage { overflow-wrap: anywhere; }
+.weekly-history .sessions-table-wrap { max-height: 60vh; }
+.weekly-history thead th { position: sticky; top: 0; background: #19222e; }
+.weekly-history td:nth-child(n+3), .weekly-history #weekly-model-breakdown td { overflow-wrap: normal; }

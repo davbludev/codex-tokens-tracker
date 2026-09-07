@@ -1,7 +1,11 @@
 //! Consistent read-only projection over retained quota samples and immutable costs.
-use super::{aggregates::CostSum, Store};
+use super::{
+    aggregates::{row_tokens, token_fields, CostSum},
+    Store,
+};
 use crate::{
     adapter,
+    aggregates::Tokens,
     weekly::{self as dto, Cost, Estimate, ReadError, Sample, Time, Timeline, Unavailable},
 };
 use rusqlite::{functions::FunctionFlags, params, Connection};
@@ -11,6 +15,78 @@ use std::{
 };
 
 impl Store {
+    pub fn read_weekly_models(
+        path: &Path,
+        query: dto::ModelsQuery,
+    ) -> Result<Option<dto::Models>, ReadError> {
+        query.validate()?;
+        let connection =
+            Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .map_err(|_| ReadError::Storage)?;
+        connection
+            .busy_timeout(std::time::Duration::from_secs(3))
+            .map_err(|_| ReadError::Storage)?;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| ReadError::Storage)?;
+        Self { connection }.weekly_models_at(
+            query,
+            Time {
+                seconds: i64::try_from(now.as_secs()).map_err(|_| ReadError::Storage)?,
+                nanos: now.subsec_nanos(),
+            },
+        )
+    }
+
+    pub(crate) fn weekly_models_at(
+        &mut self,
+        query: dto::ModelsQuery,
+        now: Time,
+    ) -> Result<Option<dto::Models>, ReadError> {
+        let key = query.validate()?;
+        register(&self.connection)?;
+        let tx = self
+            .connection
+            .transaction()
+            .map_err(|_| ReadError::Storage)?;
+        // Retain at most the requested cycle and one predecessor, even for old keys.
+        let before = if key.nanos < 999_999_999 {
+            Some(Time {
+                nanos: key.nanos + 1,
+                ..key
+            })
+        } else {
+            key.seconds
+                .checked_add(1)
+                .map(|seconds| Time { seconds, nanos: 0 })
+        };
+        let mut timeline = Timeline::new(now, before, 1);
+        scan(&tx, now, &mut timeline, |_, _| Ok(()))?;
+        let (cycles, _) = timeline.finish();
+        let Some(cycle) = cycles
+            .into_iter()
+            .find(|cycle| cycle.cycle.key == query.cycle_key)
+        else {
+            return Ok(None);
+        };
+        let estimate = estimate(
+            &tx,
+            cycle.baseline.as_ref(),
+            cycle.latest.as_ref(),
+            cycle.ambiguous,
+        )?;
+        let (items, next_cursor) = match (estimate.start, estimate.end) {
+            (Some(start), Some(end)) => models(&tx, start, end, &query.page)?,
+            _ => (Vec::new(), None),
+        };
+        Ok(Some(dto::Models {
+            cycle_key: query.cycle_key,
+            estimate,
+            items,
+            next_cursor,
+        }))
+    }
+
     pub fn read_weekly(path: &Path, query: dto::Query) -> Result<dto::Response, ReadError> {
         query.validate()?;
         let connection =
@@ -91,18 +167,28 @@ pub(super) fn project_with_start(
         Ok(())
     })?;
     let (history, next_cursor) = timeline.finish();
+    let history = history
+        .into_iter()
+        .map(|completed| {
+            let estimate = estimate(
+                tx,
+                completed.baseline.as_ref(),
+                completed.latest.as_ref(),
+                completed.ambiguous,
+            )?;
+            let tokens = match (estimate.start, estimate.end) {
+                (Some(start), Some(end)) => Some(tokens(tx, start, end)?),
+                _ => None,
+            };
+            Ok(dto::HistoricalCycle {
+                cycle: completed.cycle,
+                estimate,
+                tokens,
+            })
+        })
+        .collect::<Result<Vec<_>, ReadError>>()?;
     let estimate = |start: Option<&Sample>| -> Result<Estimate, ReadError> {
-        if timeline.ambiguous {
-            return Ok(Estimate::unavailable(Unavailable::AmbiguousObservation));
-        }
-        match (start, timeline.latest.as_ref()) {
-            (Some(start), Some(end)) if start.time < end.time => Ok(Estimate::matched(
-                start,
-                end,
-                cost(tx, start.time, now.min(end.time))?,
-            )),
-            _ => Ok(Estimate::unavailable(Unavailable::InsufficientObservations)),
-        }
+        estimate(tx, start, timeline.latest.as_ref(), timeline.ambiguous)
     };
     let overall = estimate(timeline.baseline.as_ref())?;
     let recent = estimate(timeline.recent_start.as_ref())?;
@@ -117,6 +203,83 @@ pub(super) fn project_with_start(
             excluded_samples, session_weekly_percentage_impact: None,
             coverage_note: "Since observation began: observed local estimated token cost for the current model mix, not an OpenAI charge or proof of complete account usage. Cost uses start-exclusive/end-inclusive comparable observation intervals; newer unmatched cost is separate. Session weekly percentage impact is unavailable.",
         }, earliest))
+}
+
+fn estimate(
+    tx: &Connection,
+    start: Option<&Sample>,
+    end: Option<&Sample>,
+    ambiguous: bool,
+) -> Result<Estimate, ReadError> {
+    if ambiguous {
+        return Ok(Estimate::unavailable(Unavailable::AmbiguousObservation));
+    }
+    match (start, end) {
+        (Some(start), Some(end)) if start.time < end.time => Ok(Estimate::matched(
+            start,
+            end,
+            cost(tx, start.time, end.time)?,
+        )),
+        _ => Ok(Estimate::unavailable(Unavailable::InsufficientObservations)),
+    }
+}
+
+const INTERVAL: &str = "o.accepted=1 AND (o.time_seconds,o.time_nanos)>(?1,?2) AND (o.time_seconds,o.time_nanos)<=(?3,?4)";
+
+fn tokens(tx: &Connection, start: Time, end: Time) -> Result<Tokens, ReadError> {
+    tx.query_row(
+        &format!(
+            "SELECT COUNT(*),{} FROM observations o WHERE {INTERVAL}",
+            token_fields()
+        ),
+        params![start.seconds, start.nanos, end.seconds, end.nanos],
+        |row| row_tokens(row, 1, row.get(0)?),
+    )
+    .map_err(|_| ReadError::Storage)
+}
+
+fn models(
+    tx: &Connection,
+    start: Time,
+    end: Time,
+    page: &crate::aggregates::PageRequest,
+) -> Result<(Vec<dto::Model>, Option<String>), ReadError> {
+    let mut statement = tx.prepare(&format!("SELECT CASE WHEN o.model IS NULL THEN 'unknown:' ELSE 'model:'||o.model END AS model_id,o.model,COUNT(*),{},estimated_cost_sum(v.amount),COUNT(v.observation_id) FROM observations o LEFT JOIN observation_valuations v ON v.observation_id=o.id WHERE {INTERVAL} AND (?5 IS NULL OR (CASE WHEN o.model IS NULL THEN 'unknown:' ELSE 'model:'||o.model END) COLLATE BINARY > ?5) GROUP BY o.model ORDER BY model_id COLLATE BINARY LIMIT ?6", token_fields())).map_err(|_| ReadError::Storage)?;
+    let rows = statement
+        .query_map(
+            params![
+                start.seconds,
+                start.nanos,
+                end.seconds,
+                end.nanos,
+                page.after,
+                page.limit + 1
+            ],
+            |row| {
+                let accepted: i64 = row.get(2)?;
+                let priced: i64 = row.get(16)?;
+                Ok(dto::Model {
+                    id: row.get(0)?,
+                    model: row.get(1)?,
+                    tokens: row_tokens(row, 3, accepted)?,
+                    estimated_cost: Cost {
+                        known_subtotal: row.get(15)?,
+                        complete: accepted == priced,
+                        accepted_observations: accepted as u64,
+                    },
+                })
+            },
+        )
+        .map_err(|_| ReadError::Storage)?;
+    let mut items = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| ReadError::Storage)?;
+    let more = items.len() > page.limit as usize;
+    if more {
+        items.pop();
+    }
+    let next = more.then(|| items.last().unwrap().id.clone());
+    Ok((items, next))
 }
 
 /// Visit completed canonical time groups. Both readers use the same quota

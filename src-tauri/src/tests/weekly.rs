@@ -127,7 +127,7 @@ fn weekly_chronological_distinct_duplicate_history_restart_and_reimport() {
     );
     let first = query(&mut store, "2026-01-01T00:30:00Z");
     assert_eq!(first.history.len(), 1);
-    assert_eq!(first.history[0].last_observation.used_percent, "42");
+    assert_eq!(first.history[0].cycle.last_observation.used_percent, "42");
     let current = first.current_cycle.unwrap();
     assert!(current.detected_reset);
     assert_eq!(current.first_observation.time, time("2026-01-01T00:20:00Z"));
@@ -150,7 +150,7 @@ fn weekly_chronological_distinct_duplicate_history_restart_and_reimport() {
     let restarted = query(&mut store, "2026-01-01T00:30:00Z");
     assert_eq!(restarted.history.len(), 1);
     assert_eq!(restarted.current_cycle.unwrap().key, current.key);
-    assert_eq!(restarted.history[0].key, first.history[0].key);
+    assert_eq!(restarted.history[0].cycle.key, first.history[0].cycle.key);
 }
 
 #[test]
@@ -368,7 +368,7 @@ fn weekly_reset_excludes_prior_cost_and_history_pages_are_bounded() {
     );
     assert_eq!(first.history.len(), 1);
     assert_eq!(
-        first.history[0].first_observation.time,
+        first.history[0].cycle.first_observation.time,
         time("2026-01-01T00:01:00Z")
     );
     let second = store
@@ -382,7 +382,7 @@ fn weekly_reset_excludes_prior_cost_and_history_pages_are_bounded() {
         .unwrap();
     assert_eq!(second.history.len(), 1);
     assert_eq!(
-        second.history[0].first_observation.time,
+        second.history[0].cycle.first_observation.time,
         time("2026-01-01T00:00:00Z")
     );
     assert!(second.next_cursor.is_none());
@@ -538,4 +538,341 @@ fn weekly_read_only_delivery_preserves_storage_and_reports_bad_cost() {
         weekly::ReadError::Storage
     );
     assert!(!missing.exists());
+}
+
+fn models(
+    store: &mut Store,
+    key: &str,
+    after: Option<String>,
+    limit: u32,
+) -> Option<weekly::Models> {
+    store
+        .weekly_models_at(
+            weekly::ModelsQuery {
+                cycle_key: key.into(),
+                page: crate::aggregates::PageRequest { after, limit },
+            },
+            time("2026-01-02T00:00:00Z"),
+        )
+        .unwrap()
+}
+
+#[test]
+fn weekly_history_matches_pre_reset_interval_models_and_preserves_priced_replay() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("history.sqlite");
+    let mut store = Store::open(&db).unwrap();
+    weekly(&mut store, "2026-01-01T00:00:00Z", "40");
+    weekly(&mut store, "2026-01-01T00:10:00Z", "42");
+    usage(&mut store, "start", "2026-01-01T00:00:00Z", "unpriced");
+    usage(&mut store, "inside", "2026-01-01T00:05:00Z", "priced");
+    usage(&mut store, "end", "2026-01-01T00:10:00Z", "priced");
+    usage(
+        &mut store,
+        "after",
+        "2026-01-01T00:10:00.000000001Z",
+        "unpriced",
+    );
+    price(&mut store);
+    let before = query(&mut store, "2026-01-01T00:15:00Z");
+    weekly(&mut store, "2026-01-01T00:20:00Z", "1");
+    let result = query(&mut store, "2026-01-01T00:20:00Z");
+    let history = &result.history[0];
+    assert_eq!(
+        serde_json::to_value(&history.estimate).unwrap(),
+        serde_json::to_value(before.overall).unwrap()
+    );
+    assert_eq!(
+        history.estimate.consumed_percentage_points.as_deref(),
+        Some("2")
+    );
+    assert_eq!(
+        history.estimate.effective_usd_per_percent.as_deref(),
+        Some("1.000000000000")
+    );
+    assert_eq!(
+        history.estimate.estimated_full_week_usd.as_deref(),
+        Some("100.000000000000")
+    );
+    assert_eq!(
+        history
+            .tokens
+            .as_ref()
+            .unwrap()
+            .total_tokens
+            .known_tokens
+            .as_deref(),
+        Some("2000000")
+    );
+    assert!(history.tokens.as_ref().unwrap().input_tokens.complete);
+    assert!(!history.cycle.detected_reset);
+    assert!(!history.cycle.full_cycle_cost_known);
+    let key = history.cycle.key.clone();
+    let breakdown = models(&mut store, &key, None, 1).unwrap();
+    assert_eq!(breakdown.items.len(), 1);
+    assert_eq!(breakdown.items[0].id, "model:priced");
+    assert_eq!(
+        breakdown.items[0]
+            .tokens
+            .total_tokens
+            .known_tokens
+            .as_deref(),
+        Some("2000000")
+    );
+    assert_eq!(
+        breakdown.items[0].estimated_cost.known_subtotal.as_deref(),
+        Some("2000000000000")
+    );
+    assert!(breakdown.next_cursor.is_none());
+    let original = serde_json::to_value(history).unwrap();
+    assert_eq!(original["key"], key);
+    assert!(
+        original.get("cycle").is_none(),
+        "Cycle fields remain flattened on the wire"
+    );
+    store
+        .save_model_price_at(
+            "priced",
+            PriceInput {
+                input: "9".into(),
+                cached_input: "9".into(),
+                cache_write: "9".into(),
+                output: "9".into(),
+                reasoning: None,
+                reasoning_policy: ReasoningPolicy::Included,
+                cache_write_policy: CacheWritePolicy::Unknown,
+            },
+            false,
+            (2_000_000_000, 0),
+        )
+        .unwrap();
+    while store.pricing_work_pending().unwrap() {
+        store.process_pricing_work().unwrap();
+    }
+    drop(store);
+    let mut store = Store::open(&db).unwrap();
+    usage(&mut store, "inside", "2026-01-01T00:05:00Z", "priced");
+    weekly(&mut store, "2026-01-01T00:00:00Z", "40");
+    weekly(&mut store, "2026-01-01T00:20:00Z", "1");
+    assert_eq!(
+        serde_json::to_value(&query(&mut store, "2026-01-01T00:20:00Z").history[0]).unwrap(),
+        original
+    );
+    let reopened = Store::read_weekly_models(
+        &db,
+        weekly::ModelsQuery {
+            cycle_key: key,
+            page: crate::aggregates::PageRequest {
+                after: None,
+                limit: 1,
+            },
+        },
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(reopened).unwrap(),
+        serde_json::to_value(breakdown).unwrap()
+    );
+}
+
+#[test]
+fn weekly_history_recovers_comparable_segment_and_preserves_unavailability() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&temp.path().join("segments.sqlite")).unwrap();
+    weekly(&mut store, "2026-01-01T00:00:00Z", "40");
+    weekly(&mut store, "2026-01-01T00:01:00Z", "41");
+    weekly(&mut store, "2026-01-01T00:01:00Z", "1");
+    assert_eq!(
+        query(&mut store, "2026-01-01T00:01:00Z")
+            .overall
+            .unavailable_reason,
+        Some(Unavailable::AmbiguousObservation)
+    );
+    weekly(&mut store, "2026-01-01T00:02:00Z", "2");
+    weekly(&mut store, "2026-01-01T00:03:00Z", "3");
+    usage(
+        &mut store,
+        "before-recovery",
+        "2026-01-01T00:01:30Z",
+        "unpriced",
+    );
+    usage(&mut store, "recovered", "2026-01-01T00:03:00Z", "priced");
+    price(&mut store);
+    let recovered = query(&mut store, "2026-01-01T00:03:00Z");
+    weekly(&mut store, "2026-01-01T00:04:00Z", "0");
+    let complete = query(&mut store, "2026-01-01T00:04:00Z");
+    let history = &complete.history[0];
+    assert!(history.cycle.has_ambiguous_observations);
+    assert_eq!(
+        history.cycle.first_observation.time,
+        time("2026-01-01T00:00:00Z")
+    );
+    assert_eq!(history.estimate.start, Some(time("2026-01-01T00:02:00Z")));
+    assert_eq!(
+        history.estimate.consumed_percentage_points.as_deref(),
+        Some("1")
+    );
+    assert_eq!(
+        history
+            .tokens
+            .as_ref()
+            .unwrap()
+            .total_tokens
+            .known_tokens
+            .as_deref(),
+        Some("1000000")
+    );
+    assert_eq!(
+        serde_json::to_value(&history.estimate).unwrap(),
+        serde_json::to_value(recovered.overall).unwrap()
+    );
+    // Recovery followed by a decrease closes a segment with only one endpoint.
+    weekly(&mut store, "2026-01-01T00:05:00Z", "1");
+    weekly(&mut store, "2026-01-01T00:05:00Z", "2");
+    weekly(&mut store, "2026-01-01T00:06:00Z", "1");
+    weekly(&mut store, "2026-01-01T00:07:00Z", "0");
+    let insufficient = query(&mut store, "2026-01-01T00:07:00Z");
+    let cycle = &insufficient.history[0];
+    assert!(cycle.tokens.is_none());
+    assert_eq!(
+        cycle.estimate.unavailable_reason,
+        Some(Unavailable::InsufficientObservations)
+    );
+    let unavailable_models = models(&mut store, &cycle.cycle.key, None, 10).unwrap();
+    assert!(unavailable_models.items.is_empty());
+    assert_eq!(
+        unavailable_models.estimate.unavailable_reason,
+        Some(Unavailable::InsufficientObservations)
+    );
+    weekly(&mut store, "2026-01-01T00:08:00Z", "0.5");
+    weekly(&mut store, "2026-01-01T00:09:00Z", "0");
+    let small = query(&mut store, "2026-01-01T00:09:00Z");
+    assert_eq!(
+        small.history[0].estimate.unavailable_reason,
+        Some(Unavailable::BelowOnePercentagePoint)
+    );
+    assert!(
+        small.history[0]
+            .estimate
+            .estimated_cost
+            .as_ref()
+            .unwrap()
+            .complete
+    );
+    assert_eq!(
+        small.history[0]
+            .estimate
+            .estimated_cost
+            .as_ref()
+            .unwrap()
+            .known_subtotal
+            .as_deref(),
+        Some("0")
+    );
+    assert!(small.history[0]
+        .tokens
+        .as_ref()
+        .unwrap()
+        .total_tokens
+        .known_tokens
+        .is_none());
+    assert!(
+        !small.history[0]
+            .tokens
+            .as_ref()
+            .unwrap()
+            .total_tokens
+            .complete
+    );
+}
+
+#[test]
+fn weekly_history_real_metadata_fixtures_unknown_models_and_exclusive_pages() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&temp.path().join("real.sqlite")).unwrap();
+    for (name, fixture) in [("active", super::ACTIVE), ("conflict", super::CONFLICT)] {
+        let path = temp.path().join(format!("{name}.jsonl"));
+        std::fs::write(&path, fixture).unwrap();
+        crate::source::ingest(&mut store, &path).unwrap();
+    }
+    // Research excerpts preserve real token values; quota boundaries are synthetic.
+    weekly(&mut store, "2026-01-01T11:30:00Z", "10");
+    weekly(&mut store, "2026-01-01T11:40:00Z", "12");
+    usage(&mut store, "priced-model", "2026-01-01T11:38:00Z", "priced");
+    price(&mut store);
+    weekly(&mut store, "2026-01-01T11:50:00Z", "0");
+    let result = query(&mut store, "2026-01-01T12:00:00Z");
+    let cycle = &result.history[0];
+    assert_eq!(
+        cycle
+            .tokens
+            .as_ref()
+            .unwrap()
+            .total_tokens
+            .known_tokens
+            .as_deref(),
+        Some("1079747")
+    ); // 26587 + 53160 + 1000000.
+    assert_eq!(
+        cycle.estimate.unavailable_reason,
+        Some(Unavailable::UnpricedUsage)
+    );
+    assert_eq!(
+        cycle
+            .estimate
+            .estimated_cost
+            .as_ref()
+            .unwrap()
+            .known_subtotal
+            .as_deref(),
+        Some("1000000000000")
+    );
+    let key = &cycle.cycle.key;
+    let first = models(&mut store, key, None, 1).unwrap();
+    assert_eq!(first.items[0].id, "model:gpt-5.6-terra");
+    assert_eq!(
+        first.items[0]
+            .tokens
+            .reasoning_tokens
+            .known_tokens
+            .as_deref(),
+        Some("398")
+    );
+    assert!(!first.items[0].estimated_cost.complete);
+    let second = models(&mut store, key, first.next_cursor, 1).unwrap();
+    assert_eq!(second.items[0].id, "model:priced");
+    assert!(second.items[0].estimated_cost.complete);
+    let third = models(&mut store, key, second.next_cursor, 1).unwrap();
+    assert_eq!(third.items[0].id, "unknown:");
+    assert!(third.items[0].model.is_none());
+    assert_eq!(
+        third.items[0].tokens.total_tokens.known_tokens.as_deref(),
+        Some("53160")
+    );
+    assert!(third.items[0].estimated_cost.known_subtotal.is_none());
+    assert!(third.next_cursor.is_none());
+    assert!(models(&mut store, key, Some("unknown:".into()), 1)
+        .unwrap()
+        .items
+        .is_empty());
+    assert!(models(&mut store, &result.current_cycle.unwrap().key, None, 1).is_none());
+    assert!(models(&mut store, &time("2025-01-01T00:00:00Z").key(), None, 1).is_none());
+    for (key, size) in [("bad".to_string(), 1), (key.clone(), 0), (key.clone(), 51)] {
+        assert_eq!(
+            store
+                .weekly_models_at(
+                    weekly::ModelsQuery {
+                        cycle_key: key,
+                        page: crate::aggregates::PageRequest {
+                            after: None,
+                            limit: size
+                        },
+                    },
+                    time("2026-01-02T00:00:00Z")
+                )
+                .unwrap_err(),
+            weekly::ReadError::InvalidQuery
+        );
+    }
 }

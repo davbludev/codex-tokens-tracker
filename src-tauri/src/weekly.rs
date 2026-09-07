@@ -68,6 +68,45 @@ pub struct Cycle {
     pub has_ambiguous_observations: bool,
     pub full_cycle_cost_known: bool,
 }
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoricalCycle {
+    #[serde(flatten)]
+    pub cycle: Cycle,
+    pub estimate: Estimate,
+    pub tokens: Option<crate::aggregates::Tokens>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelsQuery {
+    pub cycle_key: String,
+    pub page: crate::aggregates::PageRequest,
+}
+impl ModelsQuery {
+    pub fn validate(&self) -> Result<Time, ReadError> {
+        self.page.validate().map_err(|_| ReadError::InvalidQuery)?;
+        Time::from_key(&self.cycle_key).ok_or(ReadError::InvalidQuery)
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Model {
+    pub id: String,
+    pub model: Option<String>,
+    pub tokens: crate::aggregates::Tokens,
+    pub estimated_cost: Cost,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Models {
+    pub cycle_key: String,
+    pub estimate: Estimate,
+    pub items: Vec<Model>,
+    pub next_cursor: Option<String>,
+}
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Cost {
@@ -146,7 +185,7 @@ pub struct Response {
     pub recent: Estimate,
     pub unmatched_cost: Option<Cost>,
     pub unmatched_cost_start: Option<Time>,
-    pub history: Vec<Cycle>,
+    pub history: Vec<HistoricalCycle>,
     pub next_cursor: Option<String>,
     pub excluded_samples: u64,
     pub session_weekly_percentage_impact: Option<String>,
@@ -217,13 +256,19 @@ pub struct Timeline {
     pub latest: Option<Sample>,
     pub recent_start: Option<Sample>,
     pub ambiguous: bool,
-    history: VecDeque<Cycle>,
+    history: VecDeque<CompletedCycle>,
     before: Option<Time>,
     limit: usize,
     recent_cutoff: Time,
     group: Option<Sample>,
     conflict: bool,
     reset_conflict: bool,
+}
+pub struct CompletedCycle {
+    pub cycle: Cycle,
+    pub baseline: Option<Sample>,
+    pub latest: Option<Sample>,
+    pub ambiguous: bool,
 }
 impl Timeline {
     pub fn new(now: Time, before: Option<Time>, limit: u32) -> Self {
@@ -265,7 +310,12 @@ impl Timeline {
             .before
             .is_none_or(|before| cycle.first_observation.time < before)
         {
-            self.history.push_back(cycle);
+            self.history.push_back(CompletedCycle {
+                cycle,
+                baseline: self.baseline.clone(),
+                latest: self.latest.clone(),
+                ambiguous: self.ambiguous,
+            });
             if self.history.len() > self.limit + 1 {
                 self.history.pop_front();
             }
@@ -319,7 +369,7 @@ impl Timeline {
         self.conflict = false;
         self.reset_conflict = false;
     }
-    pub fn finish(&mut self) -> (Vec<Cycle>, Option<String>) {
+    pub fn finish(&mut self) -> (Vec<CompletedCycle>, Option<String>) {
         self.flush();
         // The current cycle is returned separately; history contains completed cycles.
         let more = self.history.len() > self.limit;
@@ -327,7 +377,7 @@ impl Timeline {
             self.history.pop_front();
         }
         let page: Vec<_> = self.history.drain(..).rev().collect();
-        let next = more.then(|| page.last().unwrap().key.clone());
+        let next = more.then(|| page.last().unwrap().cycle.key.clone());
         (page, next)
     }
 }

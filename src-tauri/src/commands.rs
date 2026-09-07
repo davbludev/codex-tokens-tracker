@@ -60,6 +60,22 @@ pub async fn usage_weekly(
 }
 
 #[tauri::command]
+pub async fn usage_weekly_models(
+    app: tauri::AppHandle,
+    query: crate::weekly::ModelsQuery,
+) -> std::result::Result<Option<crate::weekly::Models>, crate::weekly::ReadError> {
+    query.validate()?;
+    let path = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| crate::weekly::ReadError::Storage)?
+        .join("usage.sqlite");
+    tauri::async_runtime::spawn_blocking(move || Store::read_weekly_models(&path, query))
+        .await
+        .map_err(|_| crate::weekly::ReadError::Storage)?
+}
+
+#[tauri::command]
 pub async fn usage_dashboard(
     app: tauri::AppHandle,
     query: crate::dashboard::Query,
