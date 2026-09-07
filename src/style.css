@@ -1,0 +1,17 @@
+:root { font-family: system-ui, sans-serif; color: #e7edf5; background: #121820; color-scheme: dark; font-synthesis: none; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+main { padding: 24px; }
+header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; border-bottom: 1px solid #394351; padding-bottom: 16px; }
+h1 { font-size: 20px; margin: 0; }
+.status, footer, .coverage, dt { color: #aebccc; }
+.status, footer { font-size: 13px; }
+section { padding: 20px 0 8px; }
+h2 { font-size: 15px; font-weight: 500; margin: 0; }
+.value { font-size: clamp(30px, 7vw, 48px); font-weight: 650; font-variant-numeric: tabular-nums; margin: 8px 0; overflow-wrap: anywhere; }
+.coverage { margin: 0 0 18px; font-size: 14px; }
+dl { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; font-size: 13px; }
+dd { margin: 0; overflow-wrap: anywhere; }
+.diagnostic { border-left: 3px solid #f2bc63; background: #30291e; padding: 12px; color: #ffe0a9; font-size: 14px; }
+footer { border-top: 1px solid #394351; padding-top: 14px; line-height: 1.5; }
+@media (max-width: 460px) { main { padding: 16px; } dl { grid-template-columns: 1fr; gap: 4px; } dd { margin-bottom: 8px; } }
