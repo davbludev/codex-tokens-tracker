@@ -14,3 +14,13 @@
 - Owner: `src-tauri/src/tests/aggregates.rs`.
 - Responsibility: Verify conservation, pagination, category/cost completeness, exact sums, immutable history, pending hierarchy, placeholders/cycles, project evidence, migration and prepared delivery.
 - Look here when: Verifying aggregate behavior through the storage query interface.
+
+## Session explorer queries
+- Owner: `src-tauri/src/storage/aggregates/session_list.rs`; contract: `src-tauri/src/aggregates/session_list.rs`.
+- Responsibility: Filter and page observed sessions by project with deterministic direct metric ordering and bounded row metadata.
+- Look here when: Changing session search, date semantics, exact USD ordering, or unavailable row fields.
+
+## Session explorer interface
+- Owner: `src/Sessions.tsx`; reads: `src/sessions-data.ts`; details: `src/SessionDetail.tsx`.
+- Responsibility: Render one compact project-grouped page, apply filters, serialize live refreshes, and open direct/inclusive details.
+- Look here when: Changing session navigation, live paging, accessible filters, or row presentation.

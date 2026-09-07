@@ -1,5 +1,6 @@
 //! Prepared accounting data. Categories are independent projections, not addends.
 use serde::{Deserialize, Serialize};
+pub mod session_list;
 
 pub const MAX_PAGE_SIZE: u32 = 50;
 
@@ -23,6 +24,7 @@ impl PageRequest {
 pub enum Query {
     Global,
     Sessions { page: PageRequest },
+    SessionList { query: session_list::Query },
     Session { thread: String },
     Children { thread: String, page: PageRequest },
     Ancestors { thread: String, page: PageRequest },
@@ -139,6 +141,7 @@ pub struct Page<T> {
 pub enum Data {
     Global(Summary),
     Sessions(Page<Session>),
+    SessionList(session_list::Page),
     Session(Option<Session>),
     Projects(Page<Group>),
     Models(Page<Group>),

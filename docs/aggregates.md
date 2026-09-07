@@ -6,8 +6,9 @@ price configurations, call counts, observation lists, or raw source records are
 delivered.
 
 Query kinds are `global`, `session` (with `thread`), `sessions`, `projects`,
-`models`, `children` and `ancestors`. The last two also require `thread`. Every
-list requires `page: { limit: 1..50, after: null | nextCursor }`. Session lists
+`models`, `children`, `ancestors`, and `sessionList` (described below). Children
+and ancestors also require `thread`. The original list kinds require
+`page: { limit: 1..50, after: null | nextCursor }`. Original session lists
 and ancestor lists sort by session ID, not traversal depth; group lists sort by
 group ID. Children are immediate effective children. A missing session query
 returns null. Empty lists have no next cursor.
@@ -79,3 +80,43 @@ claimed. Cost sums use a checked i128 SQL aggregate over valuation text. Malform
 valuation amounts, i128 cost overflow, SQLite token integer overflow or storage
 failures return `storage` rather than a rounded or fabricated subtotal. Invalid
 page sizes return `invalidQuery`.
+
+## Session explorer
+
+`sessionList` takes `query: { limit, offset, sort, search, project, model,
+fromSeconds, beforeSeconds }`. Limit is 1–50; offset defaults to zero and sort
+defaults to `newest` (alternatives: `usd`, `tokens`). Text filters are optional,
+literal substrings with SQLite ASCII case folding, capped at 1,024 UTF-8 bytes.
+Search matches session ID; project matches its metadata path; model matches any
+accepted observation's model. `Unavailable` matches unknown project/model
+attribution, including sessions with no accepted observations. Filters combine
+with AND. The current source does not retain titles, so the UI shows
+`Untitled: SESSION_ID`; it does not inspect message content for titles.
+
+Date bounds are inclusive `fromSeconds` and exclusive `beforeSeconds` on the
+latest accepted observation timestamp. The UI converts inclusive UTC calendar
+dates to these bounds. Dates do not truncate a row's lifetime direct totals.
+Rows without timestamps remain visible unless a date filter excludes them.
+
+Rows sort by project identity first, then descending requested metric, then
+session ID ascending. Newest uses native seconds and nanoseconds. USD uses
+only complete costs and compares exact canonical decimal lengths/text; unknown
+or incomplete costs sort last, including behind a complete zero. Token totals
+are direct accepted usage. `items` is bounded by limit; `totalItems` counts the
+filtered selection; `nextOffset` is null at the end. This page intentionally
+has no full-selection usage summary and excludes missing-parent placeholders.
+
+Each row includes its project basis, at most eight model names plus a full
+distinct count and unknown-model flag, its direct summary, and immediate
+observed effective subagent count (null while hierarchy work is pending).
+Duration and session weekly percentage impact remain null because the current
+sources do not establish them. The detail dialog uses the existing `session`
+query for direct/inclusive usage. Full tree exploration is separate work.
+
+Live notifications coalesce into a serialized query and restart at offset zero;
+filter changes discard stale responses. Paging is transaction-consistent per
+request, not a frozen history snapshot. Only one page is retained in the UI.
+The explorer scans history in SQLite for selection/sort metrics and reuses
+existing summary and exact-cost aggregation; no persistent chart/list cache is
+introduced. Browser verification: `node tests/sessions-ui.mjs`, using
+`PLAYWRIGHT_MODULE` to locate an external Playwright installation if necessary.

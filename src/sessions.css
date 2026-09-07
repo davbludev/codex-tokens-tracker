@@ -1,0 +1,24 @@
+.app-navigation { display: flex; gap: 8px; margin-top: 12px; }
+.app-navigation [aria-pressed="true"] { border-color: #89b9fa; background: #253b55; }
+.sessions { min-width: 0; }
+.sessions .coverage { margin: 8px 0 12px; }
+.sessions-filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+.sessions-filters label { display: grid; gap: 4px; font-size: 12px; flex: 1 1 145px; min-width: 0; }
+.sessions-filters input, .sessions-filters select { width: 100%; min-width: 0; }
+.sessions-error { flex-basis: 100%; color: #ffbdaf; margin: 0; }
+.sessions-paging { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+.sessions-paging p { flex: 1; margin: 0; font-size: 13px; }
+.sessions-note { color: #aebccc; font-size: 12px; margin: 8px 0; }
+.sessions-table-wrap { overflow: auto; max-width: 100%; }
+.sessions table { border-collapse: collapse; width: 100%; font-size: 12px; }
+.sessions caption { text-align: left; color: #aebccc; padding: 5px 0; }
+.sessions td, .sessions th { text-align: left; vertical-align: top; padding: 8px; border-bottom: 1px solid #394351; font-weight: 400; }
+.sessions thead th { color: #aebccc; white-space: nowrap; }
+.sessions .sessions-project th { background: #1c2836; font-weight: 600; overflow-wrap: anywhere; }
+.sessions-project span { font-weight: 400; color: #aebccc; }
+.session-link { text-align: left; padding: 0; background: none; border: 0; color: #a9cfff; text-decoration: underline; overflow-wrap: anywhere; min-width: 150px; }
+.session-id, .sessions small { display: block; color: #aebccc; font-size: 11px; margin-top: 4px; overflow-wrap: anywhere; }
+.sessions td { font-variant-numeric: tabular-nums; min-width: 100px; overflow-wrap: anywhere; max-width: 260px; }
+.session-detail { color: #e7edf5; background: #19222e; border: 1px solid #52647a; border-radius: 8px; padding: 18px; width: min(760px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; }
+.session-detail::backdrop { background: #0009; }
+.session-detail h3, .session-detail p { overflow-wrap: anywhere; }

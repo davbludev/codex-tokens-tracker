@@ -6,6 +6,7 @@ use rusqlite::{
     params, Connection, OptionalExtension, Transaction,
 };
 use std::path::Path;
+mod session_list;
 
 const PROJECTS: &str = "project_sessions AS (
  SELECT s.*,
@@ -81,6 +82,9 @@ impl Store {
             )
             .map_err(|_| ReadError::Storage)?;
         let data = match query {
+            dto::Query::SessionList { query } => {
+                dto::Data::SessionList(session_list::read(&tx, query, pending)?)
+            }
             dto::Query::Global => dto::Data::Global(summary(&tx, &Selection::all(), None)?),
             dto::Query::Session { thread } => dto::Data::Session(session(&tx, &thread, pending)?),
             dto::Query::Sessions { page } => {

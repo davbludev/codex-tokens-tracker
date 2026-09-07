@@ -1,5 +1,6 @@
 use super::{historical_record, record_in_store, settle};
 use crate::{aggregates::*, storage::Store};
+mod session_list;
 
 fn page(limit: u32, after: Option<String>) -> PageRequest {
     PageRequest { limit, after }
