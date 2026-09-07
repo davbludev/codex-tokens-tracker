@@ -6,6 +6,7 @@ use crate::{
 mod aggregates;
 mod hierarchy;
 pub(crate) mod pricing;
+mod weekly;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Serialize;
 use std::path::Path;

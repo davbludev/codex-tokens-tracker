@@ -205,7 +205,7 @@ fn summary(
 
 /// SQLite's numeric SUM would coerce durable i128 TEXT values to i64 or float.
 /// Keep a single checked accumulator inside the query and return only its string.
-struct CostSum;
+pub(super) struct CostSum;
 impl Aggregate<Option<i128>, Option<String>> for CostSum {
     fn init(&self, _: &mut Context<'_>) -> rusqlite::Result<Option<i128>> {
         Ok(None)

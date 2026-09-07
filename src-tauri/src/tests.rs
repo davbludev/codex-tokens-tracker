@@ -2,6 +2,7 @@ use crate::{adapter, source, storage::Store};
 use std::{fs, io::Write};
 mod aggregates;
 mod pricing;
+mod weekly;
 
 const ACTIVE: &str = include_str!("../../fixtures/codex/active-root.jsonl");
 const CHILD: &str = include_str!("../../fixtures/codex/completed-child.jsonl");

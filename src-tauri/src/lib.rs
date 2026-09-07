@@ -8,6 +8,7 @@ mod identity_filesystem;
 mod pricing;
 mod source;
 mod storage;
+mod weekly;
 
 use tauri::Manager;
 
@@ -22,6 +23,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::usage_snapshot,
             commands::usage_aggregates,
+            commands::usage_weekly,
             commands::pricing::pricing_models,
             commands::pricing::save_model_price
         ])
