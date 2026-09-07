@@ -13,6 +13,676 @@ fn append(path: &std::path::Path, value: &str) {
         .write_all(value.as_bytes())
         .unwrap();
 }
+
+#[test]
+fn recovery_identity_initialization_is_guarded_without_generation_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&temp.path().join("identity.sqlite")).unwrap();
+    store.source_state("new").unwrap();
+    assert!(store
+        .initialize_source_identity("new", 1, "id", 10)
+        .is_err());
+    store
+        .initialize_source_identity("new", 0, "id", 10)
+        .unwrap();
+    let bound = store.source_state("new").unwrap();
+    assert_eq!(bound.generation, 0);
+    assert_eq!(bound.progress.offset, 0);
+    assert_eq!(bound.identity.as_deref(), Some("id"));
+    assert!(store
+        .initialize_source_identity("new", 0, "different", 10)
+        .is_err());
+    record_in_store(&mut store, "used", &historical_record(1));
+    assert!(store
+        .initialize_source_identity("used", 0, "id", 10)
+        .is_err());
+    assert_eq!(totals(&store), (26587, 0, 1));
+}
+
+#[test]
+fn recovery_snapshot_uses_parsed_chronology_and_reports_unresolved_usage() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&temp.path().join("snapshot.sqlite")).unwrap();
+    let mut newer = historical_record(1);
+    newer["payload"]["thread_id"] = "newer".into();
+    newer["timestamp"] = "2026-01-02T00:00:00Z".into();
+    record_in_store(&mut store, "live", &newer);
+    let mut older = historical_record(1);
+    older["payload"]["thread_id"] = "older".into();
+    older["timestamp"] = "2026-01-02T01:00:00+02:00".into();
+    record_in_store(&mut store, "imported", &older);
+    assert_eq!(
+        store.snapshot().unwrap().thread_id.as_deref(),
+        Some("newer")
+    );
+    let mut tied = historical_record(1);
+    tied["payload"]["thread_id"] = "aaa-tie".into();
+    tied["timestamp"] = "2026-01-02T02:00:00+02:00".into();
+    record_in_store(&mut store, "tied", &tied);
+    assert_eq!(
+        store.snapshot().unwrap().thread_id.as_deref(),
+        Some("aaa-tie")
+    );
+    let mut invalid = historical_record(1);
+    invalid["payload"]["thread_id"] = "invalid-time".into();
+    invalid["timestamp"] = "not-a-timestamp".into();
+    record_in_store(&mut store, "invalid", &invalid);
+    assert_eq!(
+        store.snapshot().unwrap().thread_id.as_deref(),
+        Some("aaa-tie")
+    );
+
+    let mut gap = historical_record(3);
+    gap["payload"]["thread_id"] = "aaa-tie".into();
+    gap["timestamp"] = "2026-01-02T03:00:00Z".into();
+    record_in_store(&mut store, "gap", &gap);
+    let snapshot = store.snapshot().unwrap();
+    assert_eq!(snapshot.direct_tokens.as_deref(), Some("26587"));
+    assert!(snapshot.coverage.contains("Incomplete"));
+    assert!(snapshot.diagnostic.unwrap().contains("pending"));
+    assert_eq!(
+        snapshot.observed_at.as_deref(),
+        Some("2026-01-02T03:00:00Z")
+    );
+    // Persisted pending-only states may exist at the resumable promotion boundary.
+    store.connection().execute("UPDATE observations SET accepted=0,total=NULL,state='pending' WHERE thread_id='aaa-tie'", []).unwrap();
+    let pending = store.snapshot().unwrap();
+    assert_eq!(pending.direct_tokens, None);
+    assert!(pending.coverage.contains("unavailable"));
+}
+
+#[test]
+fn recovery_v2_migration_and_snapshot_query_plan() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("v2.sqlite");
+    let connection = rusqlite::Connection::open(&db).unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/001_initial.sql"))
+        .unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/002_resumable_sources.sql"))
+        .unwrap();
+    drop(connection);
+    let mut store = Store::open(&db).unwrap();
+    for sequence in 1..=1000 {
+        record_in_store(&mut store, "representative", &historical_record(sequence));
+    }
+    let query = "SELECT thread_id,timestamp FROM observations WHERE time_seconds IS NOT NULL AND time_nanos IS NOT NULL ORDER BY time_seconds DESC,time_nanos DESC,thread_id ASC LIMIT 1";
+    let plan: Vec<String> = store
+        .connection()
+        .prepare(&format!("EXPLAIN QUERY PLAN {query}"))
+        .unwrap()
+        .query_map([], |row| row.get(3))
+        .unwrap()
+        .collect::<std::result::Result<_, _>>()
+        .unwrap();
+    assert!(
+        plan.iter().any(|line| line.contains("observation_latest")),
+        "{plan:?}"
+    );
+    assert!(
+        !plan.iter().any(|line| line.contains("TEMP B-TREE")),
+        "{plan:?}"
+    );
+    let sum_plan: Vec<String> = store.connection().prepare("EXPLAIN QUERY PLAN SELECT SUM(total) FROM observations WHERE thread_id='root-active' AND accepted=1").unwrap().query_map([], |row| row.get(3)).unwrap().collect::<std::result::Result<_,_>>().unwrap();
+    assert!(
+        sum_plan
+            .iter()
+            .any(|line| line.contains("observation_session")),
+        "{sum_plan:?}"
+    );
+    let started = std::time::Instant::now();
+    let snapshot = store.snapshot().unwrap();
+    eprintln!(
+        "1,000-observation snapshot: {:?}; latest plan: {plan:?}; sum plan: {sum_plan:?}",
+        started.elapsed()
+    );
+    assert_eq!(snapshot.direct_tokens.as_deref(), Some("26587000"));
+    drop(store);
+    let store = Store::open(&db).unwrap();
+    assert_eq!(
+        store
+            .connection()
+            .query_row::<i64, _, _>("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap(),
+        3
+    );
+    assert_eq!(
+        store.snapshot().unwrap().direct_tokens.as_deref(),
+        Some("26587000")
+    );
+}
+
+#[test]
+fn recovery_same_size_rewrite_replacement_truncation_and_archive_retain_usage() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("recovery.sqlite");
+    let path = temp.path().join("rollout-live.jsonl");
+    let mut store = Store::open(&db).unwrap();
+    let one = line(&historical_record(1));
+    let two = line(&historical_record(2));
+    assert_eq!(one.len(), two.len());
+    fs::write(&path, &one).unwrap();
+    source::ingest(&mut store, &path).unwrap();
+    let key = path.to_string_lossy();
+    let original = store.source_state(&key).unwrap();
+    assert_eq!(original.generation, 0);
+    // Rewriting the same inode at the same size is detected by its fingerprint.
+    fs::write(&path, &two).unwrap();
+    source::ingest(&mut store, &path).unwrap();
+    assert_eq!(store.source_state(&key).unwrap().generation, 1);
+    assert_eq!(totals(&store), (2 * 26587, 0, 2));
+    let replacement = temp.path().join("replacement");
+    fs::write(&replacement, &two).unwrap();
+    fs::remove_file(&path).unwrap();
+    fs::rename(&replacement, &path).unwrap();
+    source::ingest(&mut store, &path).unwrap();
+    assert_eq!(store.source_state(&key).unwrap().generation, 2);
+    fs::write(&path, "").unwrap();
+    source::ingest(&mut store, &path).unwrap();
+    assert_eq!(store.source_state(&key).unwrap().generation, 3);
+    append(&path, &line(&historical_record(3)));
+    source::ingest(&mut store, &path).unwrap();
+    let archived = temp.path().join("rollout-archive.jsonl");
+    fs::rename(&path, &archived).unwrap();
+    source::ingest(&mut store, &path).unwrap();
+    source::ingest(&mut store, &archived).unwrap();
+    drop(store);
+    let mut store = Store::open(&db).unwrap();
+    source::ingest(&mut store, &archived).unwrap();
+    assert_eq!(totals(&store), (3 * 26587, 0, 3));
+}
+
+#[test]
+fn recovery_reader_bounds_oversized_tails_and_resumes_partial_after_restart() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("tails.sqlite");
+    let path = temp.path().join("rollout-tail.jsonl");
+    let mut store = Store::open(&db).unwrap();
+    let record = line(&historical_record(1));
+    fs::write(&path, &record[..record.len() / 2]).unwrap();
+    assert!(!source::ingest_batch(&mut store, &path).unwrap());
+    let state = store.source_state(&path.to_string_lossy()).unwrap();
+    assert_eq!(state.progress.offset, 0);
+    assert_eq!(state.progress.tail_length, (record.len() / 2) as u64);
+    assert!(state.progress.verification_hash.is_some());
+    drop(store);
+    append(&path, &record[record.len() / 2..]);
+    let mut store = Store::open(&db).unwrap();
+    source::ingest(&mut store, &path).unwrap();
+    assert_eq!(totals(&store), (26587, 0, 1));
+
+    let oversized = temp.path().join("rollout-oversized.jsonl");
+    fs::write(&oversized, vec![b'x'; 3 * 1024 * 1024]).unwrap();
+    let mut steps = 0;
+    loop {
+        steps += 1;
+        let more = source::ingest_batch(&mut store, &oversized).unwrap();
+        let state = store.source_state(&oversized.to_string_lossy()).unwrap();
+        assert!(state.progress.tail_length <= steps * 256 * 1024);
+        if !more {
+            break;
+        }
+        assert!(steps < 20);
+    }
+    assert_eq!(steps, 12);
+    let before = store.source_state(&oversized.to_string_lossy()).unwrap();
+    assert!(before.progress.tail_discarding);
+    assert_eq!(before.progress.offset, 0);
+    drop(store);
+    append(&oversized, "\n");
+    let mut store = Store::open(&db).unwrap();
+    source::ingest(&mut store, &oversized).unwrap();
+    let after = store.source_state(&oversized.to_string_lossy()).unwrap();
+    assert_eq!(after.progress.ordinal, 1);
+    assert_eq!(after.progress.tail_length, 0);
+    assert_eq!(after.progress.offset, 3 * 1024 * 1024 + 1);
+    assert_eq!(totals(&store), (26587, 0, 1));
+}
+
+#[test]
+fn recovery_interrupted_import_resumes_from_atomic_batch_checkpoint() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("interrupted.sqlite");
+    let path = temp.path().join("rollout-history.jsonl");
+    let records: String = (1..=180)
+        .map(|sequence| line(&historical_record(sequence)))
+        .collect();
+    fs::write(&path, &records).unwrap();
+    let mut store = Store::open(&db).unwrap();
+    assert!(source::ingest_batch(&mut store, &path).unwrap());
+    let committed = store.source_state(&path.to_string_lossy()).unwrap();
+    assert_eq!(committed.progress.ordinal, 64);
+    assert_eq!(totals(&store), (64 * 26587, 0, 64));
+    drop(store);
+    // A live append overlaps the persisted, unfinished historical import.
+    append(&path, &line(&historical_record(181)));
+    let mut store = Store::open(&db).unwrap();
+    source::ingest(&mut store, &path).unwrap();
+    assert_eq!(totals(&store), (181 * 26587, 0, 181));
+    let final_state = store.source_state(&path.to_string_lossy()).unwrap();
+    assert_eq!(final_state.generation, committed.generation);
+    assert_eq!(final_state.progress.ordinal, 181);
+    assert_eq!(
+        final_state.progress.offset,
+        fs::metadata(&path).unwrap().len()
+    );
+}
+
+#[test]
+fn recovery_source_sweep_is_keyset_bounded_resumable_and_scoped() {
+    use crate::{commands::runtime::Work, storage::SourceProgress};
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("sweep.sqlite");
+    let mut store = Store::open(&db).unwrap();
+    let sessions = temp.path().join("sessions");
+    let mut names = Vec::new();
+    for number in 0..130 {
+        let path = sessions
+            .join(format!("rollout-{number:03}.jsonl"))
+            .to_string_lossy()
+            .into_owned();
+        store.source_state(&path).unwrap();
+        store
+            .batch(
+                &path,
+                0,
+                vec![],
+                SourceProgress {
+                    known_size: 16,
+                    tail_length: 16,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        names.push(path);
+    }
+    let through = store.source_watermark().unwrap().unwrap();
+    let later = sessions
+        .join("rollout-zzz.jsonl")
+        .to_string_lossy()
+        .into_owned();
+    store.source_state(&later).unwrap();
+    let mut after = None;
+    let mut collected = Vec::new();
+    loop {
+        let page = store.source_page(after.as_deref(), &through).unwrap();
+        assert!(page.len() <= 64);
+        if page.is_empty() {
+            break;
+        }
+        after = page.last().map(|(path, _)| path.clone());
+        collected.extend(page.into_iter().map(|(path, _)| path));
+    }
+    assert_eq!(collected, names);
+    store.source_state("outside-selected-home").unwrap();
+    store
+        .batch(
+            "outside-selected-home",
+            0,
+            vec![],
+            SourceProgress {
+                known_size: 10,
+                tail_length: 10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let mut work = Work::new(temp.path());
+    let now = std::time::Instant::now();
+    for _ in 0..3 {
+        work.step(&mut store, now).unwrap();
+    }
+    let removed: i64 = store
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM sources WHERE diagnostic LIKE 'Source removed%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(removed, 64);
+    drop(work);
+    drop(store);
+    // Restart after only the first page: the pass safely begins again.
+    let mut store = Store::open(&db).unwrap();
+    let mut work = Work::new(temp.path());
+    drain_work(&mut work, &mut store, now);
+    let remaining: i64 = store
+        .connection()
+        .query_row("SELECT COUNT(*) FROM sources WHERE partial=1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(remaining, 1); // The unrelated home is never inspected or marked removed.
+    for path in names {
+        assert_eq!(store.source_state(&path).unwrap().progress.tail_length, 0);
+    }
+    assert!(!work.busy());
+}
+
+#[test]
+fn recovery_directory_rename_removal_and_return_preserve_confirmed_usage() {
+    use crate::commands::runtime::Work;
+    use notify::{
+        event::{ModifyKind, RemoveKind, RenameMode},
+        Event, EventKind,
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let directory = temp.path().join("sessions").join("nested");
+    let archived = temp.path().join("archived_sessions");
+    fs::create_dir_all(&directory).unwrap();
+    fs::create_dir(&archived).unwrap();
+    let path = directory.join("rollout-normal.jsonl");
+    let one = line(&historical_record(1));
+    let two = line(&historical_record(2));
+    fs::write(&path, format!("{one}{}", &two[..two.len() / 2])).unwrap();
+    let large = directory.join("rollout-large.jsonl");
+    fs::write(&large, vec![b'x'; 3 * 1024 * 1024]).unwrap();
+    let mut store = Store::open(&temp.path().join("remove.sqlite")).unwrap();
+    let mut work = Work::new(temp.path());
+    let now = std::time::Instant::now();
+    drain_work(&mut work, &mut store, now);
+    assert_eq!(totals(&store), (26587, 0, 1));
+    assert!(
+        store
+            .source_state(&large.to_string_lossy())
+            .unwrap()
+            .progress
+            .tail_discarding
+    );
+    let renamed = archived.join("nested");
+    fs::rename(&directory, &renamed).unwrap();
+    work.event(
+        Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::Both)))
+            .add_path(directory.clone())
+            .add_path(renamed.clone()),
+        now,
+    );
+    drain_work(&mut work, &mut store, now);
+    assert_eq!(
+        store
+            .source_state(&path.to_string_lossy())
+            .unwrap()
+            .progress
+            .tail_length,
+        0
+    );
+    assert_eq!(
+        store
+            .source_state(&large.to_string_lossy())
+            .unwrap()
+            .progress
+            .tail_length,
+        0
+    );
+    assert_eq!(totals(&store), (26587, 0, 1));
+    fs::remove_dir_all(&renamed).unwrap();
+    work.event(
+        Event::new(EventKind::Remove(RemoveKind::Folder)).add_path(renamed),
+        now,
+    );
+    drain_work(&mut work, &mut store, now);
+    let partial: bool = store
+        .connection()
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sources WHERE partial=1)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(!partial);
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(&path, format!("{one}{two}")).unwrap();
+    work.recover("Source returned; recovering available files");
+    drain_work(&mut work, &mut store, now);
+    assert_eq!(totals(&store), (2 * 26587, 0, 2));
+    append(&path, &line(&historical_record(3)));
+    source::ingest(&mut store, &path).unwrap();
+    assert_eq!(totals(&store), (3 * 26587, 0, 3));
+}
+
+#[test]
+fn recovery_permission_or_sharing_failure_never_marks_source_removed() {
+    use crate::storage::SourceProgress;
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&temp.path().join("permission.sqlite")).unwrap();
+    store.source_state("source").unwrap();
+    store
+        .batch(
+            "source",
+            0,
+            vec![],
+            SourceProgress {
+                known_size: 32,
+                tail_length: 32,
+                verification_length: 32,
+                verification_hash: Some([1; 32]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let before = store.source_state("source").unwrap();
+    for kind in [
+        std::io::ErrorKind::PermissionDenied,
+        std::io::ErrorKind::Other,
+    ] {
+        assert!(
+            source::reconcile_presence(&store, "source", 0, Err(std::io::Error::from(kind)))
+                .is_err()
+        );
+        assert_eq!(store.source_state("source").unwrap(), before);
+    }
+    source::reconcile_presence(
+        &store,
+        "source",
+        0,
+        Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
+    )
+    .unwrap();
+    assert_eq!(
+        store.source_state("source").unwrap().progress.tail_length,
+        0
+    );
+}
+
+fn drain_work(
+    work: &mut crate::commands::runtime::Work,
+    store: &mut Store,
+    now: std::time::Instant,
+) {
+    for _ in 0..20000 {
+        if !work.step(store, now).unwrap() && !work.busy() {
+            return;
+        }
+    }
+    panic!("bounded work did not become idle");
+}
+
+#[test]
+fn recovery_import_live_overlap_debounce_fairness_and_idle() {
+    use crate::commands::runtime::{Work, DEBOUNCE};
+    use notify::{event::ModifyKind, Event, EventKind};
+    let temp = tempfile::tempdir().unwrap();
+    let sessions = temp.path().join("sessions");
+    let archive = temp.path().join("archived_sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    fs::create_dir_all(&archive).unwrap();
+    let history = sessions.join("rollout-history.jsonl");
+    let ignored = "{\"type\":\"response_item\",\"payload\":{}}\n";
+    fs::write(&history, ignored.repeat(10000)).unwrap();
+    let live = sessions.join("rollout-live.jsonl");
+    fs::write(&live, line(&historical_record(2))).unwrap();
+    fs::write(
+        archive.join("rollout-old.jsonl"),
+        line(&historical_record(1)),
+    )
+    .unwrap();
+    fs::write(archive.join("unrelated.jsonl"), line(&historical_record(4))).unwrap();
+    let mut store = Store::open(&temp.path().join("runtime.sqlite")).unwrap();
+    let mut work = Work::new(temp.path());
+    let now = std::time::Instant::now();
+    // Trigger a live append while the large historical file is still importing.
+    for _ in 0..5 {
+        work.step(&mut store, now).unwrap();
+    }
+    append(&live, &line(&historical_record(3)));
+    for _ in 0..100 {
+        work.event(
+            Event::new(EventKind::Modify(ModifyKind::Any)).add_path(live.clone()),
+            now,
+        );
+    }
+    assert_eq!(work.deadline(), Some(now + DEBOUNCE));
+    for _ in 0..30 {
+        work.step(&mut store, now + DEBOUNCE).unwrap();
+    }
+    assert_eq!(totals(&store), (3 * 26587, 0, 3));
+    assert!(
+        store.checkpoint(&history.to_string_lossy()).unwrap().0
+            < fs::metadata(&history).unwrap().len()
+    );
+    drain_work(&mut work, &mut store, now + DEBOUNCE);
+    assert_eq!(work.discovered, 3);
+    assert!(work.progress().contains("Live monitoring"));
+    assert!(work.progress().len() < 256);
+    let changes = store.connection().total_changes();
+    let batches = work.batches;
+    for _ in 0..10 {
+        assert!(!work.step(&mut store, now + DEBOUNCE).unwrap());
+    }
+    assert_eq!(store.connection().total_changes(), changes);
+    assert_eq!(work.batches, batches);
+    assert_eq!(work.deadline(), None);
+}
+
+#[test]
+fn recovery_overflow_errors_and_directory_rename_discover_missed_sources() {
+    use crate::commands::runtime::Work;
+    use notify::{
+        event::{ModifyKind, RenameMode},
+        Event, EventKind,
+    };
+    let temp = tempfile::tempdir().unwrap();
+    fs::create_dir(temp.path().join("sessions")).unwrap();
+    let mut store = Store::open(&temp.path().join("events.sqlite")).unwrap();
+    let mut work = Work::new(temp.path());
+    let now = std::time::Instant::now();
+    drain_work(&mut work, &mut store, now);
+    let path = temp.path().join("sessions/rollout-missed.jsonl");
+    fs::write(&path, line(&historical_record(1))).unwrap();
+    work.recover("Source events overflowed; recovering available files");
+    drain_work(&mut work, &mut store, now);
+    assert_eq!(totals(&store), (26587, 0, 1));
+    append(&path, &line(&historical_record(2)));
+    work.recover("Native watcher reported an error; recovering available files");
+    drain_work(&mut work, &mut store, now);
+    assert_eq!(totals(&store), (2 * 26587, 0, 2));
+    let directory = temp.path().join("sessions/moved");
+    fs::create_dir(&directory).unwrap();
+    fs::write(
+        directory.join("rollout-new.jsonl"),
+        line(&historical_record(3)),
+    )
+    .unwrap();
+    work.event(
+        Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::To))).add_path(directory),
+        now,
+    );
+    drain_work(&mut work, &mut store, now);
+    assert_eq!(totals(&store), (3 * 26587, 0, 3));
+}
+
+#[test]
+fn recovery_native_missing_home_and_sources_appear_without_restart() {
+    use crate::commands::{runtime::Work, NativeWatch};
+    use std::time::{Duration, Instant};
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("new-home");
+    let mut native = NativeWatch::new(&home).unwrap();
+    let mut work = Work::new(&home);
+    let mut store = Store::open(&temp.path().join("native.sqlite")).unwrap();
+    drain_work(&mut work, &mut store, Instant::now());
+    assert!(work.progress().contains("Waiting"));
+    let sessions = home.join("sessions").join("2026").join("09").join("07");
+    fs::create_dir_all(&sessions).unwrap();
+    let path = sessions.join("rollout-native.jsonl");
+    fs::write(&path, line(&historical_record(1))).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while totals(&store).0 != 26587 {
+        let event = native
+            .receive
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap()
+            .unwrap();
+        native.accept(&mut work, Ok(event), Instant::now());
+        drain_work(
+            &mut work,
+            &mut store,
+            Instant::now() + Duration::from_secs(1),
+        );
+    }
+    append(&path, &line(&historical_record(2)));
+    while totals(&store).0 != 2 * 26587 {
+        let event = native
+            .receive
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap()
+            .unwrap();
+        native.accept(&mut work, Ok(event), Instant::now());
+        drain_work(
+            &mut work,
+            &mut store,
+            Instant::now() + Duration::from_secs(1),
+        );
+    }
+    assert_eq!(
+        store.checkpoint(&path.to_string_lossy()).unwrap().0,
+        fs::metadata(&path).unwrap().len()
+    );
+}
+
+#[test]
+fn recovery_native_queue_overflow_and_error_restore_missed_records() {
+    use crate::commands::{runtime::Work, NativeWatch};
+    use std::{
+        sync::atomic::Ordering,
+        time::{Duration, Instant},
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    let sessions = home.join("sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    let mut native = NativeWatch::new(&home).unwrap();
+    let mut work = Work::new(&home);
+    let mut store = Store::open(&temp.path().join("overflow.sqlite")).unwrap();
+    drain_work(&mut work, &mut store, Instant::now());
+    // Deliberately stop consuming the production bounded channel during a burst.
+    for number in 0..600 {
+        fs::write(sessions.join(format!("rollout-{number}.jsonl")), "").unwrap();
+    }
+    let missed = sessions.join("rollout-missed.jsonl");
+    fs::write(&missed, line(&historical_record(1))).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !native.overflow.load(Ordering::Relaxed) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(
+        native.recover_overflow(&mut work),
+        "native burst must exercise channel overflow"
+    );
+    drain_work(&mut work, &mut store, Instant::now());
+    assert_eq!(totals(&store), (26587, 0, 1));
+    append(&missed, &line(&historical_record(2)));
+    native.accept(
+        &mut work,
+        Err(notify::Error::generic("synthetic watcher failure")),
+        Instant::now(),
+    );
+    drain_work(&mut work, &mut store, Instant::now());
+    assert_eq!(totals(&store), (2 * 26587, 0, 2));
+    assert!(!work.busy());
+}
 fn modern() -> serde_json::Value {
     serde_json::from_str(ACTIVE.lines().last().unwrap()).unwrap()
 }
@@ -72,8 +742,20 @@ fn opening_explicit_usage_legacy_mirror_and_gap_stop() {
     source::ingest(&mut store, &child).unwrap();
     // This excerpt omits the middle of the stream: stop after the first verified response.
     assert_eq!(
-        store.snapshot().unwrap().direct_tokens.as_deref(),
-        Some("30444")
+        store
+            .connection()
+            .query_row::<i64, _, _>(
+                "SELECT SUM(total) FROM observations WHERE thread_id='child-a' AND accepted=1",
+                [],
+                |r| r.get(0)
+            )
+            .unwrap(),
+        30444
+    );
+    // Importing an older session does not displace the latest source observation.
+    assert_eq!(
+        store.snapshot().unwrap().thread_id.as_deref(),
+        Some("child-conflict")
     );
     assert!(store.snapshot().unwrap().diagnostic.is_some());
 }
@@ -397,7 +1079,7 @@ fn settle(store: &mut Store) {
 }
 
 fn totals(store: &Store) -> (i64, i64, i64) {
-    store.connection().query_row("SELECT COALESCE(SUM(total),0),SUM(state='pending'),SUM(state='accepted') FROM observations",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap()
+    store.connection().query_row("SELECT COALESCE(SUM(total),0),COALESCE(SUM(state='pending'),0),COALESCE(SUM(state='accepted'),0) FROM observations",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap()
 }
 
 #[test]
@@ -720,7 +1402,7 @@ fn version_one_migration_preserves_usage_and_promotes_its_pending_gap() {
         .connection()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
     assert_eq!(totals(&store), (4 * 26587, 0, 4));
 }
 

@@ -1,8 +1,8 @@
 # Live ingestion
 
 ## Source reader
-- Owner: `src-tauri/src/source.rs`; symbols: `sessions_directory`, `latest_rollout`, `ingest`.
-- Responsibility: Discover Codex rollouts and read bounded complete lines with shared Windows access and persisted offsets.
+- Owner: `src-tauri/src/source.rs`; symbols: `Discovery`, `ingest_batch`.
+- Responsibility: Traverse source trees boundedly and read atomic batches with shared file identity, fingerprints, generation recovery, and content-free tail checkpoints.
 - Look here when: Changing source selection or incremental reading.
 
 ## Modern adapter and accounting
@@ -16,8 +16,8 @@
 - Look here when: Changing recovery persistence, late-history reconciliation, or normalized storage.
 
 ## Desktop updates
-- Owner: `src-tauri/src/commands.rs`; entry: `src-tauri/src/lib.rs`.
-- Responsibility: Native event orchestration and bounded Tauri command/event delivery.
+- Owner: `src-tauri/src/commands.rs`; companion: `src-tauri/src/commands/runtime.rs`; entry: `src-tauri/src/lib.rs`.
+- Responsibility: Parent/root native watching, debounced bounded queues, fair discovery/read/promotion/paged-presence work, recovery, and bounded progress/IPC delivery.
 - Look here when: Changing live updates or runtime error reporting.
 
 ## Presentation
@@ -27,5 +27,5 @@
 
 ## Ingestion checks
 - Owner: `src-tauri/src/tests.rs`.
-- Responsibility: Fixture accounting, late-arrival permutations, bounded promotion/restart, migration, recovery metadata/privacy, transaction rollback, and native append checks.
+- Responsibility: Accounting, chronology, migration, privacy, atomic checkpoints, recovery, import/live scheduling, and native missing-directory/append checks.
 - Look here when: Verifying the supported ingestion boundary.

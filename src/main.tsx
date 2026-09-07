@@ -43,12 +43,12 @@ function App() {
     <section aria-labelledby="direct-heading">
       <h2 id="direct-heading">Direct session tokens</h2>
       <p className="value" aria-live="polite" aria-atomic="true">{tokens != null ? BigInt(tokens).toLocaleString() : "Unavailable"}</p>
-      <p className="coverage">{snapshot?.coverage ?? "Connecting to local usage…"}</p>
+      <p className="coverage" role="status">{snapshot?.coverage ?? "Connecting to local usage…"}</p>
       <dl><dt>Session</dt><dd>{snapshot?.threadId ?? "Waiting for supported usage"}</dd>
         <dt>Last observation</dt><dd>{snapshot?.observedAt ? <time dateTime={snapshot.observedAt}>{snapshot.observedAt}</time> : "Unavailable"}</dd></dl>
     </section>
     {(error || snapshot?.diagnostic) && <p className="diagnostic" role="status">{error ?? snapshot?.diagnostic}</p>}
-    <footer>Latest discovered session at startup; changed sessions update automatically. Descendants are excluded. Metadata and usage stay on this device.</footer>
+    <footer>Shows the session with the latest source observation. Available history imports automatically while live changes continue. Descendants are excluded. Metadata and usage stay on this device.</footer>
   </main>;
 }
 

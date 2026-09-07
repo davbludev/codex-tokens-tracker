@@ -1,11 +1,13 @@
+pub(crate) mod runtime;
+
 use crate::{
     source,
     storage::{Snapshot, Store},
 };
 use notify::{RecursiveMode, Watcher};
+use runtime::Work;
 use std::{
-    collections::HashSet,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc, Arc, Mutex,
@@ -24,12 +26,14 @@ pub fn usage_snapshot(state: tauri::State<'_, State>) -> std::result::Result<Sna
         .map(|s| s.clone())
         .map_err(|_| "Usage state is unavailable".into())
 }
+
 fn publish(app: &tauri::AppHandle, snapshot: Snapshot) {
     if let Ok(mut current) = app.state::<State>().0.lock() {
         *current = snapshot.clone();
     }
     let _ = app.emit("usage-updated", snapshot);
 }
+
 fn failure(app: &tauri::AppHandle, message: &str) {
     let mut snapshot = app
         .state::<State>()
@@ -45,102 +49,225 @@ fn failure(app: &tauri::AppHandle, message: &str) {
     publish(app, snapshot);
 }
 
+/// Watch the home non-recursively for missing/replaced source roots. If the home
+/// is absent, watch one existing parent and advance toward the home on events.
+pub(crate) struct NativeWatch {
+    watcher: notify::RecommendedWatcher,
+    pub receive: mpsc::Receiver<notify::Result<notify::Event>>,
+    pub overflow: Arc<AtomicBool>,
+    home: PathBuf,
+    watched: Vec<PathBuf>,
+}
+
+impl NativeWatch {
+    pub fn new(home: &Path) -> notify::Result<Self> {
+        let (send, receive) = mpsc::sync_channel(256);
+        let overflow = Arc::new(AtomicBool::new(false));
+        let callback_overflow = overflow.clone();
+        let watcher = notify::recommended_watcher(move |event| {
+            if send.try_send(event).is_err() {
+                callback_overflow.store(true, Ordering::Relaxed);
+            }
+        })?;
+        let mut result = Self {
+            watcher,
+            receive,
+            overflow,
+            home: source::normalized_path(home),
+            watched: Vec::new(),
+        };
+        result.refresh()?;
+        Ok(result)
+    }
+
+    pub fn structural(&self, event: &notify::Event) -> bool {
+        matches!(
+            event.kind,
+            notify::EventKind::Create(_)
+                | notify::EventKind::Remove(_)
+                | notify::EventKind::Modify(notify::event::ModifyKind::Name(_))
+        ) && event.paths.iter().any(|path| {
+            let path = source::normalized_path(path);
+            self.home.starts_with(&path)
+                || path == self.home.join("sessions")
+                || path == self.home.join("archived_sessions")
+        })
+    }
+
+    pub fn accept(
+        &mut self,
+        work: &mut Work,
+        event: notify::Result<notify::Event>,
+        now: Instant,
+    ) -> bool {
+        match event {
+            Ok(event) if matches!(event.kind, notify::EventKind::Access(_)) => false,
+            Ok(event) => {
+                if !event.need_rescan()
+                    && !event.paths.iter().any(|path| {
+                        let path = source::normalized_path(path);
+                        self.home.starts_with(&path)
+                            || work.roots.iter().any(|root| path.starts_with(root))
+                    })
+                {
+                    return false;
+                }
+                if self.structural(&event) {
+                    work.recover("Source directories changed; recovering available files");
+                    if self.refresh().is_err() {
+                        work.failed("Some source directories could not be watched".into());
+                    }
+                }
+                work.event(event, now);
+                true
+            }
+            Err(_) => {
+                work.recover("Native watcher reported an error; recovering available files");
+                if self.refresh().is_err() {
+                    work.failed("Some source directories could not be watched".into());
+                }
+                true
+            }
+        }
+    }
+
+    pub fn recover_overflow(&mut self, work: &mut Work) -> bool {
+        if !self.overflow.swap(false, Ordering::Relaxed) {
+            return false;
+        }
+        work.recover("Source events overflowed; recovering available files");
+        if self.refresh().is_err() {
+            work.failed("Some source directories could not be watched".into());
+        }
+        true
+    }
+
+    pub fn refresh(&mut self) -> notify::Result<()> {
+        for path in self.watched.drain(..) {
+            let _ = self.watcher.unwatch(&path);
+        }
+        let parent = self
+            .home
+            .ancestors()
+            .skip(1)
+            .find(|path| path.is_dir())
+            .ok_or_else(|| notify::Error::generic("Source parent is unavailable"))?;
+        self.watcher.watch(parent, RecursiveMode::NonRecursive)?;
+        self.watched.push(parent.to_path_buf());
+        if self.home.is_dir() {
+            self.watcher
+                .watch(&self.home, RecursiveMode::NonRecursive)?;
+            self.watched.push(self.home.clone());
+        }
+        for root in [
+            self.home.join("sessions"),
+            self.home.join("archived_sessions"),
+        ] {
+            if root.is_dir() {
+                self.watcher.watch(&root, RecursiveMode::Recursive)?;
+                self.watched.push(root);
+            }
+        }
+        Ok(())
+    }
+}
+
 pub fn start(app: tauri::AppHandle, database: PathBuf) {
     std::thread::spawn(move || {
         let Some(directory) = source::sessions_directory() else {
             failure(&app, "Codex home could not be discovered");
             return;
         };
-        if !directory.is_dir() {
-            failure(
-                &app,
-                "Codex sessions directory is missing. Start Codex, then restart this monitor.",
-            );
-            return;
-        }
-        let mut store = match Store::open(&database) {
-            Ok(s) => s,
-            Err(e) => {
-                failure(&app, &e.to_string());
+        let home = match std::path::absolute(directory.parent().unwrap()) {
+            Ok(home) => home,
+            Err(_) => {
+                failure(&app, "Codex home could not be resolved");
                 return;
             }
         };
-        let (send, receive) = mpsc::sync_channel(256);
-        let overflow = Arc::new(AtomicBool::new(false));
-        let callback_overflow = overflow.clone();
-        let mut watcher = match notify::recommended_watcher(move |event| {
-            if send.try_send(event).is_err() {
-                callback_overflow.store(true, Ordering::Relaxed);
+        let mut store = match Store::open(&database) {
+            Ok(store) => store,
+            Err(error) => {
+                failure(&app, &error.to_string());
+                return;
             }
-        }) {
-            Ok(w) => w,
+        };
+        // Subscribe before opening the first discovery iterator.
+        let mut native = match NativeWatch::new(&home) {
+            Ok(watcher) => watcher,
             Err(_) => {
                 failure(&app, "Native source watcher could not start");
                 return;
             }
         };
-        // Register before reading to close the discovery/read append race.
-        if watcher.watch(&directory, RecursiveMode::Recursive).is_err() {
-            failure(&app, "Codex sessions could not be watched");
-            return;
-        }
-        let mut error = None;
-        match source::latest_rollout(&directory) {
-            Ok(Some(path)) => {
-                if let Err(e) = source::ingest(&mut store, &path) {
-                    error = Some(e.to_string());
+        let mut work = Work::new(&home);
+        let mut first = None;
+        let mut dirty = true;
+        let mut published = Instant::now() - Duration::from_millis(100);
+        loop {
+            let events: Vec<_> = first
+                .take()
+                .into_iter()
+                .chain(native.receive.try_iter().take(255))
+                .collect();
+            for event in events {
+                dirty |= native.accept(&mut work, event, Instant::now());
+            }
+            dirty |= native.recover_overflow(&mut work);
+            match work.step(&mut store, Instant::now()) {
+                Ok(changed) => dirty |= changed,
+                Err(error) => {
+                    failure(&app, &error.to_string());
+                    return;
                 }
             }
-            Ok(None) => (),
-            Err(_) => error = Some("Codex sources could not be discovered".into()),
-        }
-        publish_result(&app, &store, error);
-        while let Ok(first) = receive.recv() {
-            let started = Instant::now();
-            let mut paths = HashSet::new();
-            let mut error = None;
-            for event in std::iter::once(first).chain(receive.try_iter().take(255)) {
-                match event {
-                    Ok(event) => {
-                        if matches!(
-                            event.kind,
-                            notify::EventKind::Create(_) | notify::EventKind::Modify(_)
-                        ) {
-                            for path in event.paths {
-                                if path.starts_with(&directory) && source::is_rollout(&path) {
-                                    paths.insert(path);
-                                }
-                            }
+            if dirty && published.elapsed() >= Duration::from_millis(100) {
+                match store.snapshot() {
+                    Ok(mut snapshot) => {
+                        snapshot.coverage = format!("{}. {}", work.progress(), snapshot.coverage);
+                        snapshot.source_available = work.roots.iter().any(|path| path.is_dir());
+                        if work.diagnostic.is_some() {
+                            snapshot.diagnostic = work.diagnostic.clone();
                         }
+                        publish(&app, snapshot);
                     }
-                    Err(_) => error = Some("Native source watcher reported an error".into()),
+                    Err(error) => {
+                        failure(&app, &error.to_string());
+                        return;
+                    }
                 }
+                published = Instant::now();
+                dirty = false;
             }
-            for path in paths {
-                if let Err(e) = source::ingest(&mut store, &path) {
-                    error = Some(e.to_string());
-                }
+            if work.busy() {
+                continue;
             }
-            if overflow.swap(false, Ordering::Relaxed) {
-                error = Some("Source event queue overflowed; coverage may be incomplete. Restart to resume the latest source.".into());
-            }
-            // Bound IPC frequency without polling while idle.
-            if let Some(remaining) = Duration::from_millis(100).checked_sub(started.elapsed()) {
-                std::thread::sleep(remaining);
-            }
-            publish_result(&app, &store, error);
+            let deadline = work
+                .deadline()
+                .into_iter()
+                .chain(dirty.then_some(published + Duration::from_millis(100)))
+                .min();
+            // With no queued debounce or publication, wait indefinitely for an event.
+            first = match deadline {
+                Some(deadline) => match native
+                    .receive
+                    .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                {
+                    Ok(event) => Some(event),
+                    Err(mpsc::RecvTimeoutError::Timeout) => None,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        failure(&app, "Native source watcher stopped");
+                        return;
+                    }
+                },
+                None => match native.receive.recv() {
+                    Ok(event) => Some(event),
+                    Err(_) => {
+                        failure(&app, "Native source watcher stopped");
+                        return;
+                    }
+                },
+            };
         }
-        failure(&app, "Native source watcher stopped");
     });
-}
-fn publish_result(app: &tauri::AppHandle, store: &Store, error: Option<String>) {
-    match store.snapshot() {
-        Ok(mut snapshot) => {
-            if error.is_some() {
-                snapshot.diagnostic = error;
-            }
-            publish(app, snapshot);
-        }
-        Err(e) => failure(app, &e.to_string()),
-    }
 }

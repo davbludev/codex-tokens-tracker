@@ -78,7 +78,7 @@ impl Store {
         let mut connection = Connection::open(path)?;
         connection.busy_timeout(std::time::Duration::from_secs(3))?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > 2 {
+        if version > 3 {
             return Err(Error::Schema);
         }
         if version == 0 {
@@ -113,6 +113,11 @@ impl Store {
             tx.execute("INSERT INTO reconciliation_work(observation_id) SELECT id FROM observations WHERE state='pending'", [])?;
             tx.commit()?;
         }
+        if version < 3 {
+            let tx = connection.transaction()?;
+            tx.execute_batch(include_str!("../migrations/003_snapshot_chronology.sql"))?;
+            tx.commit()?;
+        }
         Ok(Self { connection })
     }
 
@@ -125,6 +130,45 @@ impl Store {
                 offset: unsigned(r,2)?, ordinal: r.get(3)?, known_size: unsigned(r,4)?, tail_length: unsigned(r,5)?, tail_discarding: r.get(6)?, verification_start: unsigned(r,7)?, verification_length: r.get(8)?, verification_hash: digest,
             }})
         })?)
+    }
+
+    /// Capture an upper bound once so live inserts cannot prolong a recovery pass.
+    pub fn source_watermark(&self) -> Result<Option<String>> {
+        Ok(self
+            .connection
+            .query_row("SELECT MAX(path) FROM sources", [], |row| row.get(0))?)
+    }
+
+    /// Keyset recovery metadata only; no offsets into a growing table or raw data.
+    pub fn source_page(&self, after: Option<&str>, through: &str) -> Result<Vec<(String, i64)>> {
+        let mut query = self.connection.prepare(if after.is_some() {
+            "SELECT path,generation FROM sources WHERE path>?1 AND path<=?2 ORDER BY path LIMIT 64"
+        } else {
+            "SELECT path,generation FROM sources WHERE path<=?2 ORDER BY path LIMIT 64"
+        })?;
+        let rows = query.query_map(params![after, through], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Bind a new source without changing its generation or any accounting state.
+    pub fn initialize_source_identity(
+        &self,
+        path: &str,
+        generation: i64,
+        identity: &str,
+        known_size: u64,
+    ) -> Result<()> {
+        if identity.is_empty() || identity.len() > 256 {
+            return Err(Error::RecoveryMetadata);
+        }
+        let size = i64::try_from(known_size).map_err(|_| Error::Offset)?;
+        let changed = self.connection.execute("UPDATE sources SET identity=?,known_size=? WHERE path=? AND generation=? AND identity IS NULL AND offset=0 AND ordinal=0 AND tail_length=0 AND tail_discarding=0 AND verification_start=0 AND verification_length=0 AND verification_hash IS NULL AND NOT EXISTS(SELECT 1 FROM observations WHERE source_path=? AND source_generation=?)", params![identity,size,path,generation,path,generation])?;
+        if changed != 1 {
+            return Err(Error::StaleBatch);
+        }
+        Ok(())
     }
 
     /// Call only after replacement, truncation, or verification failure is established.
@@ -393,7 +437,7 @@ fn apply_record(
 fn snapshot(connection: &Connection) -> Result<Snapshot> {
     let selected: Option<(String, Option<String>)> = connection
         .query_row(
-            "SELECT thread_id, timestamp FROM observations ORDER BY id DESC LIMIT 1",
+            "SELECT thread_id, timestamp FROM observations WHERE time_seconds IS NOT NULL AND time_nanos IS NOT NULL ORDER BY time_seconds DESC,time_nanos DESC,thread_id ASC LIMIT 1",
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -411,15 +455,31 @@ fn snapshot(connection: &Connection) -> Result<Snapshot> {
         ..Default::default()
     };
     if let Some((thread, timestamp)) = selected {
+        let thread_diagnostic: Option<String> = connection.query_row("SELECT diagnostic FROM observations WHERE thread_id=? AND diagnostic IS NOT NULL ORDER BY time_seconds DESC,time_nanos DESC LIMIT 1", [&thread], |r| r.get(0)).optional()?;
+        let unresolved: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM observations WHERE thread_id=? AND accepted=0)",
+            [&thread],
+            |r| r.get(0),
+        )?;
         let total: Option<i64> = connection.query_row(
             "SELECT SUM(total) FROM observations WHERE thread_id=? AND accepted=1",
             [&thread],
             |r| r.get(0),
         )?;
+        snapshot.diagnostic = thread_diagnostic.or(snapshot.diagnostic);
         snapshot.thread_id = Some(thread);
         snapshot.observed_at = timestamp;
         snapshot.direct_tokens = total.map(|n| n.to_string());
-        snapshot.coverage = "Observed direct usage only; history may be incomplete".into();
+        snapshot.coverage = if unresolved {
+            if snapshot.direct_tokens.is_some() {
+                "Incomplete observed direct usage; some observations are pending or unavailable"
+            } else {
+                "Direct usage unavailable; observations are pending or unsupported"
+            }
+        } else {
+            "Observed direct usage only; history may be incomplete"
+        }
+        .into();
     } else {
         let legacy: bool = connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM sources WHERE legacy=1)",

@@ -335,11 +335,13 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tempfile",
  "thiserror 2.0.20",
  "time",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
