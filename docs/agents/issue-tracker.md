@@ -32,5 +32,7 @@ otherwise record `Blocked by: #<number>` in the child.
 A ticket is unblocked when all blockers are closed.
 Choose the first open, unblocked, unassigned child in map order.
 Claim it with `gh issue edit <number> --add-assignee @me`.
-On resolution, comment with the result, close the ticket, and add
-a summary and link to the map's Decisions-so-far.
+After successfully completing the associated current or claimed GitHub task issue,
+comment with the result, close that task issue, and add a summary and link to the
+map's Decisions-so-far. Leave the issue open when work is blocked, partial, or
+unsuccessful; completing a child task does not close its parent map issue.
