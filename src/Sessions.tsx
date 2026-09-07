@@ -1,14 +1,16 @@
-import { Fragment, useState } from "react";
+import { Fragment, useRef, useState } from "react";
 import { costText } from "./dashboard-data";
 import { useSessionRead } from "./sessions-data";
-import { initialSessionQuery, type SessionFilters, type SessionPage, type SessionRow } from "./sessions-types";
+import { initialSessionQuery, type SessionFilters, type SessionPage } from "./sessions-types";
 import { SessionDetail, tokenText } from "./SessionDetail";
 import "./sessions.css";
 
 export function Sessions() {
+  const heading = useRef<HTMLHeadingElement>(null);
+  const opener = useRef<HTMLButtonElement | null>(null);
   const [filters, setFilters] = useState<SessionFilters>(initialSessionQuery);
   const [dateError, setDateError] = useState<string | null>(null);
-  const [selected, setSelected] = useState<SessionRow | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
   const { data, error, connectionError, loading, choose, retry } = useSessionRead<SessionPage>({ kind: "sessionList", query: initialSessionQuery });
   const page = data?.data.data;
   function navigate(offset: number, nextFilters = filters) {
@@ -28,7 +30,7 @@ export function Sessions() {
     setDateError(null); setFilters(next); navigate(0, next);
   }
   return <section className="sessions" aria-labelledby="sessions-title">
-    <h2 id="sessions-title">Sessions</h2>
+    <h2 id="sessions-title" ref={heading} tabIndex={-1}>Sessions</h2>
     <p className="coverage">Grouped by project. Sort applies within each project using direct session usage. Dates filter last accepted usage (UTC); rows show lifetime usage.</p>
     <form className="sessions-filters" onSubmit={apply}>
       <label>Search session ID<input name="search" type="search" maxLength={256} /></label>
@@ -53,7 +55,7 @@ export function Sessions() {
       <table><caption>Direct session usage · estimated USD · immediate observed subagents</caption><thead><tr><th scope="col">Session / ID</th><th scope="col">Last observed / duration</th><th scope="col">Models</th><th scope="col">Direct tokens</th><th scope="col">Estimated USD</th><th scope="col">Subagents</th><th scope="col">Weekly impact</th></tr></thead>
         <tbody>{page.items.map((row, index) => <Fragment key={row.threadId}>
           {(index === 0 || page.items[index - 1].project.id !== row.project.id) && <tr className="sessions-project"><th colSpan={7} scope="colgroup">{row.project.value ?? "Project unavailable"} <span>· {row.project.basis === "locationDerived" ? "Location-derived" : row.project.basis === "confirmedRepository" ? "Confirmed repository" : "Identity unavailable"}</span></th></tr>}
-          <tr className="session-row"><th scope="row"><button type="button" className="session-link" onClick={() => setSelected(row)}>{row.title ?? `Untitled: ${row.threadId}`}</button><span className="session-id">{row.threadId}</span></th>
+          <tr className="session-row"><th scope="row"><button type="button" className="session-link" onClick={event => { opener.current = event.currentTarget; setSelected(row.threadId); }}>{row.title ?? `Untitled: ${row.threadId}`}</button><span className="session-id">{row.threadId}</span></th>
             <td>{row.lastObservedAt ?? "Unavailable"}<small>Duration: {row.durationSeconds === null ? "Unavailable" : `${row.durationSeconds}s`}</small></td>
             <td>{row.models.join(", ") || "Unavailable"}{row.modelCount > row.models.length && <small>+{row.modelCount - row.models.length} more models</small>}{row.unknownModel && row.models.length > 0 && <small>Some model attribution unavailable</small>}</td>
             <td>{tokenText(row.direct)}</td><td>{costText(row.direct.estimatedCost)}</td><td>{row.directSubagentCount ?? "Unavailable"}</td><td>{row.weeklyPercentageImpact === null ? "Unavailable" : `${row.weeklyPercentageImpact}%`}</td></tr>
@@ -61,6 +63,9 @@ export function Sessions() {
       </table>
     </div>}
     {data?.hierarchyPending && <p role="status">Subagent counts are unavailable while hierarchy is being reconciled.</p>}
-    {selected && <SessionDetail row={selected} onClose={() => setSelected(null)} />}
+    {selected && <SessionDetail threadId={selected} onClose={() => {
+      setSelected(null);
+      (opener.current?.isConnected ? opener.current : heading.current)?.focus();
+    }} />}
   </section>;
 }

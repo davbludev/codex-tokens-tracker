@@ -6,6 +6,7 @@ use rusqlite::{
     params, Connection, OptionalExtension, Transaction,
 };
 use std::path::Path;
+mod session_detail;
 mod session_list;
 
 const PROJECTS: &str = "project_sessions AS (
@@ -87,6 +88,13 @@ impl Store {
             }
             dto::Query::Global => dto::Data::Global(summary(&tx, &Selection::all(), None)?),
             dto::Query::Session { thread } => dto::Data::Session(session(&tx, &thread, pending)?),
+            dto::Query::SessionModels { thread, page } => {
+                dto::Data::SessionModels(session_detail::models(&tx, &thread, page)?)
+            }
+            dto::Query::SessionTimeline {
+                thread,
+                point_budget,
+            } => dto::Data::SessionTimeline(session_detail::timeline(&tx, &thread, point_budget)?),
             dto::Query::Sessions { page } => {
                 dto::Data::Sessions(sessions(&tx, &Selection::all(), None, page, pending)?)
             }
@@ -129,6 +137,14 @@ fn summary(
     selection: &Selection,
     key: Option<&str>,
 ) -> Result<dto::Summary, ReadError> {
+    summary_with_params(tx, selection, [key])
+}
+
+fn summary_with_params(
+    tx: &Transaction<'_>,
+    selection: &Selection,
+    parameters: impl rusqlite::Params + Clone,
+) -> Result<dto::Summary, ReadError> {
     let cte = selection.cte();
     // json_extract operates only on the durable allowlisted projection. No observation
     // list or normalized JSON is loaded into Rust or sent across IPC.
@@ -150,7 +166,7 @@ fn summary(
             &format!(
                 "{cte} SELECT COUNT(*),{fields} FROM usage WHERE accepted=1 AND (?1 IS NULL OR 1)"
             ),
-            [key],
+            parameters.clone(),
             |row| {
                 let accepted: i64 = row.get(0)?;
                 let category = |column| -> rusqlite::Result<dto::Category> {
@@ -173,7 +189,7 @@ fn summary(
         .map_err(|_| ReadError::Storage)?;
     let estimated_cost = tx.query_row(
         &format!("{cte} SELECT estimated_cost_sum(v.amount),COUNT(*),COUNT(v.observation_id) FROM usage o LEFT JOIN observation_valuations v ON v.observation_id=o.id WHERE o.accepted=1 AND (?1 IS NULL OR 1)"),
-        [key],
+        parameters.clone(),
         |row| {
             let accepted: i64 = row.get(1)?;
             let priced: i64 = row.get(2)?;
@@ -188,12 +204,12 @@ fn summary(
         COUNT(CASE WHEN is_placeholder=0 AND incomplete=1 THEN 1 END),
         COUNT(CASE WHEN is_placeholder=0 AND NOT EXISTS(SELECT 1 FROM usage o WHERE o.thread_id=scope.thread_id AND accepted=1) THEN 1 END),
         EXISTS(SELECT 1 FROM scope WHERE is_placeholder=0 AND project_id='unknown:')
-        FROM scope WHERE (?1 IS NULL OR 1)"), [key], |r| Ok((count(r,0)?,count(r,1)?,count(r,2)?,count(r,3)?,r.get(4)?))).map_err(|_| ReadError::Storage)?;
+        FROM scope WHERE (?1 IS NULL OR 1)"), parameters.clone(), |r| Ok((count(r,0)?,count(r,1)?,count(r,2)?,count(r,3)?,r.get(4)?))).map_err(|_| ReadError::Storage)?;
     let (unresolved_usage, unknown_model, source_diagnostics): (bool,bool,bool) = tx.query_row(&format!("{cte} SELECT
         EXISTS(SELECT 1 FROM usage WHERE accepted=0),
         EXISTS(SELECT 1 FROM usage WHERE accepted=1 AND model IS NULL),
-        EXISTS(SELECT 1 FROM sources WHERE (thread_id IN (SELECT thread_id FROM scope) OR (?1 IS NULL AND thread_id IS NULL)) AND (diagnostic IS NOT NULL OR legacy=1 OR halted=1 OR partial=1))"), [key], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(|_| ReadError::Storage)?;
-    let observed_at = tx.query_row(&format!("{cte} SELECT timestamp FROM usage WHERE time_seconds IS NOT NULL AND time_nanos IS NOT NULL AND (?1 IS NULL OR 1) ORDER BY time_seconds DESC,time_nanos DESC,thread_id ASC LIMIT 1"), [key], |r| r.get(0)).optional().map_err(|_| ReadError::Storage)?;
+        EXISTS(SELECT 1 FROM sources WHERE (thread_id IN (SELECT thread_id FROM scope) OR (?1 IS NULL AND thread_id IS NULL)) AND (diagnostic IS NOT NULL OR legacy=1 OR halted=1 OR partial=1))"), parameters.clone(), |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(|_| ReadError::Storage)?;
+    let observed_at = tx.query_row(&format!("{cte} SELECT timestamp FROM usage WHERE time_seconds IS NOT NULL AND time_nanos IS NOT NULL AND (?1 IS NULL OR 1) ORDER BY time_seconds DESC,time_nanos DESC,thread_id ASC LIMIT 1"), parameters, |r| r.get(0)).optional().map_err(|_| ReadError::Storage)?;
     Ok(dto::Summary {
         tokens,
         estimated_cost,
@@ -269,8 +285,15 @@ fn session(
     let Some((placeholder, parent_state, parent_thread_id, project)) = row else {
         return Ok(None);
     };
+    let (first_observed_at, last_observed_at) = session_detail::observed_bounds(tx, thread)?;
     Ok(Some(dto::Session {
         thread_id: thread.into(),
+        title: None,
+        started_at: None,
+        ended_at: None,
+        duration_seconds: None,
+        first_observed_at,
+        last_observed_at,
         placeholder,
         parent_state: if pending {
             "pending".into()

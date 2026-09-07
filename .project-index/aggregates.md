@@ -11,8 +11,8 @@
 - Look here when: Changing grouping, pagination, freshness, or hierarchy readiness in aggregates.
 
 ## Aggregate checks
-- Owner: `src-tauri/src/tests/aggregates.rs`.
-- Responsibility: Verify conservation, pagination, category/cost completeness, exact sums, immutable history, pending hierarchy, placeholders/cycles, project evidence, migration and prepared delivery.
+- Owner: `src-tauri/src/tests/aggregates.rs`; detail checks: `src-tauri/src/tests/aggregates/session_detail.rs`.
+- Responsibility: Verify conservation, pagination, completeness, exact sums/shares, immutable history, hierarchy readiness, placeholders/cycles, project evidence, migration and bounded timeline gaps.
 - Look here when: Verifying aggregate behavior through the storage query interface.
 
 ## Session explorer queries
@@ -24,3 +24,13 @@
 - Owner: `src/Sessions.tsx`; reads: `src/sessions-data.ts`; details: `src/SessionDetail.tsx`.
 - Responsibility: Render one compact project-grouped page, apply filters, serialize live refreshes, and open direct/inclusive details.
 - Look here when: Changing session navigation, live paging, accessible filters, or row presentation.
+
+## Session detail projection
+- Owner: `src-tauri/src/aggregates/session_detail.rs`; wire: `src/sessions-types.ts`.
+- Responsibility: Define direct model/timeline data, exact cost shares, cumulative projections and bounded gap-preserving sampling.
+- Look here when: Changing session detail contracts or chart continuity.
+
+## Session detail queries
+- Owner: `src-tauri/src/storage/aggregates/session_detail.rs`.
+- Responsibility: Read accepted observation bounds, paged session model summaries and chronological usage groups in the aggregate snapshot.
+- Look here when: Changing detail query scopes, cost attribution, or untimed usage disclosure.

@@ -19,6 +19,34 @@
 .session-link { text-align: left; padding: 0; background: none; border: 0; color: #a9cfff; text-decoration: underline; overflow-wrap: anywhere; min-width: 150px; }
 .session-id, .sessions small { display: block; color: #aebccc; font-size: 11px; margin-top: 4px; overflow-wrap: anywhere; }
 .sessions td { font-variant-numeric: tabular-nums; min-width: 100px; overflow-wrap: anywhere; max-width: 260px; }
-.session-detail { color: #e7edf5; background: #19222e; border: 1px solid #52647a; border-radius: 8px; padding: 18px; width: min(760px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; }
+.session-detail { box-sizing: border-box; color: #e7edf5; background: #19222e; border: 1px solid #52647a; border-radius: 8px; padding: 16px; width: min(1080px, calc(100vw - 24px)); max-height: calc(100vh - 32px); overflow: auto; }
 .session-detail::backdrop { background: #0009; }
 .session-detail h3, .session-detail p { overflow-wrap: anywhere; }
+.session-detail header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.session-detail h2 { margin: 0; }
+.session-detail h3 { margin: 16px 0 8px; }
+.session-detail h4 { margin: 12px 0 6px; }
+.session-detail section { min-width: 0; margin-top: 16px; border-top: 1px solid #394351; }
+.session-detail dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.session-detail dt { color: #aebccc; }
+.session-metadata { display: grid; grid-template-columns: minmax(125px, auto) minmax(0, 1fr); gap: 6px 16px; font-size: 13px; }
+.session-categories { display: flex; flex-wrap: wrap; gap: 10px 20px; font-size: 13px; }
+.session-categories div { flex: 1 1 130px; }
+.session-relationships { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.session-relationships section { border: 0; margin: 0; }
+.session-relations { list-style: none; padding: 0; margin: 6px 0; max-height: 280px; overflow: auto; }
+.session-relations li { padding: 8px 2px; border-bottom: 1px solid #394351; }
+.session-page-controls, .session-chart-key { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.session-chart-key { font-size: 12px; gap: 8px 16px; }
+.session-chart { margin: 12px 0; min-width: 0; }
+.session-chart figcaption { font-size: 13px; }
+.session-detail input[type="range"] { width: 100%; }
+.session-boundaries { font-size: 12px; overflow-wrap: anywhere; max-height: 180px; overflow: auto; }
+.session-detail .session-link { min-width: 0; padding: 4px 0; }
+.session-detail :focus-visible { outline: 2px solid #a9cfff; outline-offset: 3px; }
+@media (max-width: 600px) {
+  .session-detail { padding: 10px; }
+  .session-relationships { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .session-metadata { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+  .session-metadata dd { margin-bottom: 7px; }
+}

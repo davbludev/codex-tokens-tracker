@@ -1,5 +1,6 @@
 //! Prepared accounting data. Categories are independent projections, not addends.
 use serde::{Deserialize, Serialize};
+pub mod session_detail;
 pub mod session_list;
 
 pub const MAX_PAGE_SIZE: u32 = 50;
@@ -23,13 +24,38 @@ impl PageRequest {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Query {
     Global,
-    Sessions { page: PageRequest },
-    SessionList { query: session_list::Query },
-    Session { thread: String },
-    Children { thread: String, page: PageRequest },
-    Ancestors { thread: String, page: PageRequest },
-    Projects { page: PageRequest },
-    Models { page: PageRequest },
+    Sessions {
+        page: PageRequest,
+    },
+    SessionList {
+        query: session_list::Query,
+    },
+    Session {
+        thread: String,
+    },
+    SessionModels {
+        thread: String,
+        page: PageRequest,
+    },
+    SessionTimeline {
+        thread: String,
+        #[serde(rename = "pointBudget")]
+        point_budget: Option<u32>,
+    },
+    Children {
+        thread: String,
+        page: PageRequest,
+    },
+    Ancestors {
+        thread: String,
+        page: PageRequest,
+    },
+    Projects {
+        page: PageRequest,
+    },
+    Models {
+        page: PageRequest,
+    },
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -42,7 +68,7 @@ pub enum ReadError {
 
 /// A subtotal can be useful even when some observations lack this category.
 /// None means no known value, including a session with no accepted usage.
-#[derive(Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Category {
     pub known_tokens: Option<String>,
@@ -79,7 +105,7 @@ pub struct Coverage {
     pub source_diagnostics: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EstimatedCost {
     /// Canonical integer in 10^-12 USD. None means no priced accepted usage.
@@ -102,6 +128,12 @@ pub struct Summary {
 #[serde(rename_all = "camelCase")]
 pub struct Session {
     pub thread_id: String,
+    pub title: Option<String>,
+    pub started_at: Option<String>,
+    pub ended_at: Option<String>,
+    pub duration_seconds: Option<u64>,
+    pub first_observed_at: Option<String>,
+    pub last_observed_at: Option<String>,
     pub placeholder: bool,
     pub parent_state: String,
     pub parent_thread_id: Option<String>,
@@ -143,6 +175,8 @@ pub enum Data {
     Sessions(Page<Session>),
     SessionList(session_list::Page),
     Session(Option<Session>),
+    SessionModels(Option<session_detail::Models>),
+    SessionTimeline(Option<session_detail::Timeline>),
     Projects(Page<Group>),
     Models(Page<Group>),
 }
