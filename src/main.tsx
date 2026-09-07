@@ -6,6 +6,8 @@ import "./style.css";
 import { ModelPricing } from "./ModelPricing";
 import { Dashboard } from "./Dashboard";
 import { Sessions } from "./Sessions";
+import { Projects } from "./Projects";
+import { Models } from "./Models";
 
 type Snapshot = {
   threadId: string | null;
@@ -17,7 +19,7 @@ type Snapshot = {
 };
 
 function App() {
-  const [view, setView] = useState<"dashboard" | "sessions">("dashboard");
+  const [view, setView] = useState<"dashboard" | "sessions" | "projects" | "models">("dashboard");
   const [pricingOpen, setPricingOpen] = useState(false);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -45,8 +47,8 @@ function App() {
   return <main>
     <header><h1>Codex usage</h1><span className="status">{snapshot?.sourceAvailable ? "Watching local sessions" : "Source unavailable"}</span><button type="button" onClick={() => setPricingOpen(true)}>Model Pricing</button></header>
     <ModelPricing open={pricingOpen} onClose={() => setPricingOpen(false)} />
-    <nav className="app-navigation" aria-label="Usage views"><button type="button" aria-pressed={view === "dashboard"} onClick={() => setView("dashboard")}>Dashboard</button><button type="button" aria-pressed={view === "sessions"} onClick={() => setView("sessions")}>Sessions</button></nav>
-    {view === "dashboard" ? <Dashboard /> : <Sessions />}
+    <nav className="app-navigation" aria-label="Usage views">{(["dashboard", "sessions", "projects", "models"] as const).map(item => <button key={item} type="button" aria-pressed={view === item} onClick={() => setView(item)}>{item[0].toUpperCase() + item.slice(1)}</button>)}</nav>
+    {view === "dashboard" ? <Dashboard /> : view === "sessions" ? <Sessions /> : view === "projects" ? <Projects /> : <Models />}
     {(error || snapshot?.diagnostic) && <p className="diagnostic" role="status">{error ?? snapshot?.diagnostic}</p>}
     <footer>Available local history imports automatically while live changes continue. Metadata and usage stay on this device.</footer>
   </main>;

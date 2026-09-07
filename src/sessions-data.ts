@@ -24,7 +24,7 @@ export function coverageText(summary: GlobalSummary): string {
 }
 
 /** Serial reads retain only the current page; live changes restart mutable paging. */
-export function useSessionRead<T>(initial: AggregateQuery) {
+export function useSessionRead<T>(initial: AggregateQuery, subject = "Sessions") {
   const selected = useRef(initial);
   const generation = useRef(0);
   const refresh = useRef<() => void>(() => {});
@@ -52,7 +52,7 @@ export function useSessionRead<T>(initial: AggregateQuery) {
         if (!disposed && version === generation.current) setError(failure === "invalidQuery"
           ? "These filters are invalid. Check the date range and shorten text filters."
           : failure === "hierarchyPending" ? "Hierarchy pending — relationships are being reconciled."
-          : "Sessions could not be loaded. Retry to reconnect to local usage.");
+          : `${subject} could not be loaded. Retry to reconnect to local usage.`);
       } finally {
         running = false;
         if (!disposed) {

@@ -1,5 +1,6 @@
 use super::{historical_record, record_in_store, settle};
 use crate::{aggregates::*, storage::Store};
+mod analytics;
 mod session_detail;
 mod session_list;
 

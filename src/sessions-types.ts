@@ -68,6 +68,9 @@ export type AggregateResponse<T> = {
 };
 export type SessionAggregateResponse = Omit<AggregateResponse<unknown>, "data"> & { data: SessionAggregateData };
 export type AggregateQuery =
+  | { kind: "projectAnalytics" | "modelAnalytics"; page: AggregatePageRequest }
+  | { kind: "projectModels"; project: string; page: AggregatePageRequest }
+  | { kind: "modelHistory"; model: string; start: ObservationTime; end: ObservationTime; pointBudget: number }
   | { kind: "sessionList"; query: SessionQuery }
   | { kind: "session"; thread: string }
   | { kind: "sessions"; page: AggregatePageRequest }

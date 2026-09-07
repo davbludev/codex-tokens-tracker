@@ -1,5 +1,6 @@
 //! Prepared accounting data. Categories are independent projections, not addends.
 use serde::{Deserialize, Serialize};
+pub mod analytics;
 pub mod session_detail;
 pub mod session_list;
 
@@ -23,6 +24,23 @@ impl PageRequest {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Query {
+    ProjectAnalytics {
+        page: PageRequest,
+    },
+    ModelAnalytics {
+        page: PageRequest,
+    },
+    ProjectModels {
+        project: String,
+        page: PageRequest,
+    },
+    ModelHistory {
+        model: String,
+        start: crate::weekly::Time,
+        end: crate::weekly::Time,
+        #[serde(rename = "pointBudget")]
+        point_budget: Option<u32>,
+    },
     Global,
     Sessions {
         page: PageRequest,
@@ -171,6 +189,10 @@ pub struct Page<T> {
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
 pub enum Data {
+    ProjectAnalytics(analytics::Projects),
+    ModelAnalytics(analytics::Models),
+    ProjectModels(analytics::ProjectModels),
+    ModelHistory(analytics::History),
     Global(Summary),
     Sessions(Page<Session>),
     SessionList(session_list::Page),

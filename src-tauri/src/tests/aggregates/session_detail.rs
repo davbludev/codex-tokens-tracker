@@ -2,7 +2,7 @@ use super::*;
 use crate::aggregates::session_detail::{BoundaryKind, Models, ShareUnavailable, Timeline};
 
 /// Distinct turns with explicit deltas and a matching thread endpoint.
-fn observation(
+pub(super) fn observation(
     store: &mut Store,
     thread: &str,
     index: i64,

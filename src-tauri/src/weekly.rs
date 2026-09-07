@@ -5,7 +5,7 @@ use std::{collections::VecDeque, str::FromStr};
 
 pub const MAX_HISTORY: u32 = 50;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Time {
     pub seconds: i64,

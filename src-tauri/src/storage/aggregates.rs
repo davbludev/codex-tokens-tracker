@@ -6,6 +6,7 @@ use rusqlite::{
     params, Connection, OptionalExtension, Transaction,
 };
 use std::path::Path;
+mod analytics;
 mod session_detail;
 mod session_list;
 
@@ -62,14 +63,24 @@ impl Store {
     }
 
     pub fn aggregates(&mut self, query: dto::Query) -> Result<dto::Response, ReadError> {
-        self.connection
-            .create_aggregate_function(
-                "estimated_cost_sum",
-                1,
-                FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
-                CostSum,
-            )
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
             .map_err(|_| ReadError::Storage)?;
+        self.aggregates_at(
+            query,
+            crate::weekly::Time {
+                seconds: i64::try_from(now.as_secs()).map_err(|_| ReadError::Storage)?,
+                nanos: now.subsec_nanos(),
+            },
+        )
+    }
+
+    pub(crate) fn aggregates_at(
+        &mut self,
+        query: dto::Query,
+        now: crate::weekly::Time,
+    ) -> Result<dto::Response, ReadError> {
+        super::weekly::register(&self.connection).map_err(|_| ReadError::Storage)?;
         let tx = self
             .connection
             .transaction()
@@ -83,6 +94,23 @@ impl Store {
             )
             .map_err(|_| ReadError::Storage)?;
         let data = match query {
+            dto::Query::ProjectAnalytics { page } => {
+                dto::Data::ProjectAnalytics(analytics::projects(&tx, page, pending, now)?)
+            }
+            dto::Query::ModelAnalytics { page } => {
+                dto::Data::ModelAnalytics(analytics::models(&tx, page, now)?)
+            }
+            dto::Query::ProjectModels { project, page } => {
+                dto::Data::ProjectModels(analytics::project_models(&tx, &project, page)?)
+            }
+            dto::Query::ModelHistory {
+                model,
+                start,
+                end,
+                point_budget,
+            } => {
+                dto::Data::ModelHistory(analytics::history(&tx, &model, start, end, point_budget)?)
+            }
             dto::Query::SessionList { query } => {
                 dto::Data::SessionList(session_list::read(&tx, query, pending)?)
             }
@@ -146,6 +174,14 @@ fn summary_with_params(
     parameters: impl rusqlite::Params + Clone,
 ) -> Result<dto::Summary, ReadError> {
     let cte = selection.cte();
+    summary_from_cte(tx, &cte, parameters)
+}
+
+fn summary_from_cte(
+    tx: &Transaction<'_>,
+    cte: &str,
+    parameters: impl rusqlite::Params + Clone,
+) -> Result<dto::Summary, ReadError> {
     // json_extract operates only on the durable allowlisted projection. No observation
     // list or normalized JSON is loaded into Rust or sent across IPC.
     let categories = [

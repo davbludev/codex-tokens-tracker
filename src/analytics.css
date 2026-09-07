@@ -1,0 +1,8 @@
+.analytics th[scope="row"] { min-width: 180px; max-width: 290px; overflow-wrap: anywhere; }
+.analytics td p { margin: 4px 0 10px; }
+.analytics td strong { font-weight: 500; }
+.analytics small { line-height: 1.5; }
+.analytics .session-page-controls button { white-space: normal; }
+.analytics :focus-visible { outline: 2px solid #a9cfff; outline-offset: 3px; }
+.app-navigation { flex-wrap: wrap; }
+.session-page-controls [aria-pressed="true"] { border-color: #89b9fa; background: #253b55; }
