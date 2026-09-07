@@ -27,8 +27,16 @@ vertical slice: displayed values cover observed direct usage, excluding children
 Historical import, replacement/truncation recovery, full watcher resilience,
 aggregation, pricing, and weekly calculations remain later tasks. Missing sources
 require starting Codex and restarting the monitor. Legacy-only counters are
-unavailable. Unknown envelopes produce a coverage notice; unreconciled modern
-usage stops accounting for that source and preserves a diagnostic.
+unavailable. Unknown envelopes produce a coverage notice. Invalid modern usage
+stops accounting for that source; a historical gap remains pending and can be
+promoted when connecting observations arrive, preserving confirmed usage.
+
+The #4 storage foundation adds versioned migration, bounded atomic batches,
+canonical timestamp ordering, and resumable promotion of connected historical
+observations. Source recovery state stores complete-line offsets, tail length,
+file generation/identity, size, and bounded verification digests, never raw tail
+text. Reader/watch coordination does not yet use these recovery interfaces;
+historical discovery, event recovery, and import progress remain the next #4 area.
 
 Checks:
 
@@ -40,4 +48,7 @@ node docs/research/check-fixtures.mjs
 
 The Rust checks cover explicit deltas, cross-file replay, restart/checkpoints,
 transaction rollback, incomplete lines, malformed sources, identity conflicts,
-missing categories, native append events, and rate-limit sample precision.
+missing categories, native append events, and rate-limit sample precision. They
+also cover late-history arrival permutations, pending duplicates and conflicts,
+equal-time ordering, bounded promotion across restart, schema migration, and
+content-free recovery metadata.

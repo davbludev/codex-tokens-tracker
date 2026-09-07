@@ -4,6 +4,14 @@ use serde_json::value::RawValue;
 
 pub const VERSION: &str = "modern-1";
 
+/// Canonical UTC ordering, independent of timezone spelling or fractional precision.
+pub fn observation_time(timestamp: &str) -> Result<(i64, u32), &'static str> {
+    let value =
+        time::OffsetDateTime::parse(timestamp, &time::format_description::well_known::Rfc3339)
+            .map_err(|_| "Invalid usage timestamp")?;
+    Ok((value.unix_timestamp(), value.nanosecond()))
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Counter {
     #[default]
@@ -179,6 +187,7 @@ pub fn decode(line: &[u8]) -> Result<Record, &'static str> {
                 .timestamp
                 .filter(|s| !s.is_empty() && s.len() <= 64)
                 .ok_or("Missing usage timestamp")?;
+            observation_time(&timestamp)?;
             if usage.thread_id.is_empty() || usage.thread_id.len() > 512 {
                 return Err("Missing direct thread identity");
             }

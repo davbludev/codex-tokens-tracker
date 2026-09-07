@@ -7,13 +7,13 @@
 
 ## Modern adapter and accounting
 - Owner: `src-tauri/src/adapter.rs`; companion: `src-tauri/src/accounting.rs`.
-- Responsibility: Project allowlisted metadata and reconcile modern direct usage against thread endpoints.
+- Responsibility: Project allowlisted metadata and decide chronological neighbor order and two-sided acceptance against modern thread endpoints.
 - Look here when: Changing supported record shapes or acceptance rules.
 
 ## Persistence
-- Owner: `src-tauri/src/storage.rs`; migration: `src-tauri/migrations/001_initial.sql`.
-- Responsibility: Commit usage, identities, rate-limit samples, and checkpoints; prepare one direct-session snapshot.
-- Look here when: Changing replay semantics or normalized storage.
+- Owner: `src-tauri/src/storage.rs`; migrations: `src-tauri/migrations/`; symbols: `batch`, `source_state`, `restart_source`, `reconcile_pending`.
+- Responsibility: Atomically commit bounded usage batches, generation/tail verification metadata, and queued chronological promotion; preserve confirmed observations and prepare one direct-session snapshot.
+- Look here when: Changing recovery persistence, late-history reconciliation, or normalized storage.
 
 ## Desktop updates
 - Owner: `src-tauri/src/commands.rs`; entry: `src-tauri/src/lib.rs`.
@@ -27,5 +27,5 @@
 
 ## Ingestion checks
 - Owner: `src-tauri/src/tests.rs`.
-- Responsibility: Fixture accounting, replay/restart, transaction rollback, incomplete tails, and rate-limit provenance checks.
+- Responsibility: Fixture accounting, late-arrival permutations, bounded promotion/restart, migration, recovery metadata/privacy, transaction rollback, and native append checks.
 - Look here when: Verifying the supported ingestion boundary.
