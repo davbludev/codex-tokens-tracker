@@ -78,7 +78,7 @@ impl Store {
         let mut connection = Connection::open(path)?;
         connection.busy_timeout(std::time::Duration::from_secs(3))?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > 3 {
+        if version > 4 {
             return Err(Error::Schema);
         }
         if version == 0 {
@@ -116,6 +116,11 @@ impl Store {
         if version < 3 {
             let tx = connection.transaction()?;
             tx.execute_batch(include_str!("../migrations/003_snapshot_chronology.sql"))?;
+            tx.commit()?;
+        }
+        if version < 4 {
+            let tx = connection.transaction()?;
+            tx.execute_batch(include_str!("../migrations/004_metadata_evidence.sql"))?;
             tx.commit()?;
         }
         Ok(Self { connection })
@@ -349,24 +354,51 @@ fn apply_record(
                     r.get(0)
                 })?;
             let encoded = serde_json::to_string(&meta)?;
-            let old: Option<String> = tx
-                .query_row(
-                    "SELECT metadata FROM sessions WHERE thread_id=?",
-                    [&meta.id],
-                    |r| r.get(0),
-                )
-                .optional()?
-                .flatten();
-            if existing.as_ref().is_some_and(|id| id != &meta.id)
-                || old.as_ref().is_some_and(|value| value != &encoded)
-            {
-                diagnostic(&tx, path, "Conflicting session identity or metadata", true)?;
+            if existing.as_ref().is_some_and(|id| id != &meta.id) {
+                diagnostic(&tx, path, "Conflicting direct session identity", true)?;
             } else {
                 tx.execute("INSERT INTO sessions(thread_id, metadata) VALUES(?,?) ON CONFLICT(thread_id) DO UPDATE SET metadata=COALESCE(sessions.metadata,excluded.metadata)", params![meta.id, encoded])?;
                 tx.execute(
                     "UPDATE sources SET thread_id=? WHERE path=?",
                     params![meta.id, path],
                 )?;
+                for (origin, parent) in [
+                    (
+                        "session_meta.parent_thread_id",
+                        meta.parent_thread_id.as_deref(),
+                    ),
+                    (
+                        "session_meta.source.subagent.thread_spawn.parent_thread_id",
+                        meta.nested_parent_thread_id.as_deref(),
+                    ),
+                ] {
+                    if let Some(parent) = parent {
+                        evidence(tx, path, start, &meta.id, "", "parent", parent, origin)?;
+                    }
+                }
+                location_evidence(
+                    tx,
+                    path,
+                    start,
+                    &meta.id,
+                    "",
+                    "session_meta",
+                    meta.cwd.as_deref(),
+                    meta.workspace_roots.as_deref(),
+                )?;
+                if let Some(version) = meta.cli_version.as_deref() {
+                    evidence(
+                        tx,
+                        path,
+                        start,
+                        &meta.id,
+                        "",
+                        "cli_version",
+                        version,
+                        "session_meta",
+                    )?;
+                }
+                refresh_attribution(tx, &meta.id)?;
             }
         }
         Ok(Record::Context(context)) => {
@@ -375,6 +407,17 @@ fn apply_record(
                     r.get(0)
                 })?;
             if let Some(thread) = thread {
+                location_evidence(
+                    tx,
+                    path,
+                    start,
+                    &thread,
+                    &context.turn_id,
+                    "turn_context",
+                    context.cwd.as_deref(),
+                    context.workspace_roots.as_deref(),
+                )?;
+                refresh_attribution(tx, &thread)?;
                 let old: Option<Option<String>> = tx
                     .query_row(
                         "SELECT model FROM turn_contexts WHERE thread_id=? AND turn_id=?",
@@ -434,6 +477,58 @@ fn apply_record(
     Ok(())
 }
 
+fn evidence(
+    tx: &Transaction<'_>,
+    path: &str,
+    offset: i64,
+    thread: &str,
+    turn: &str,
+    kind: &str,
+    value: &str,
+    origin: &str,
+) -> Result<()> {
+    if value.is_empty() {
+        return Ok(());
+    }
+    tx.execute("INSERT OR IGNORE INTO metadata_evidence(thread_id,kind,value,origin,turn_id,source_path,source_generation,source_offset) SELECT ?,?,?,?,?,path,generation,? FROM sources WHERE path=?", params![thread,kind,value,origin,turn,offset,path])?;
+    Ok(())
+}
+
+fn location_evidence(
+    tx: &Transaction<'_>,
+    path: &str,
+    offset: i64,
+    thread: &str,
+    turn: &str,
+    origin: &str,
+    cwd: Option<&str>,
+    roots: Option<&[String]>,
+) -> Result<()> {
+    if let Some(cwd) = cwd {
+        evidence(tx, path, offset, thread, turn, "cwd", cwd, origin)?;
+    }
+    if let Some(roots) = roots {
+        for root in roots {
+            evidence(
+                tx,
+                path,
+                offset,
+                thread,
+                turn,
+                "workspace_root",
+                root,
+                origin,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn refresh_attribution(tx: &Transaction<'_>, thread: &str) -> Result<()> {
+    tx.execute("UPDATE sessions SET parent_thread_id=(SELECT CASE WHEN COUNT(DISTINCT value)=1 THEN MIN(value) END FROM metadata_evidence WHERE thread_id=?1 AND kind='parent'), parent_state=(SELECT CASE COUNT(DISTINCT value) WHEN 0 THEN 'unavailable' WHEN 1 THEN 'available' ELSE 'ambiguous' END FROM metadata_evidence WHERE thread_id=?1 AND kind='parent'), location_state=(SELECT CASE COUNT(DISTINCT value) WHEN 0 THEN 'unavailable' WHEN 1 THEN 'available' ELSE 'ambiguous' END FROM metadata_evidence WHERE thread_id=?1 AND kind IN ('cwd','workspace_root')) WHERE thread_id=?1", [thread])?;
+    Ok(())
+}
+
 fn snapshot(connection: &Connection) -> Result<Snapshot> {
     let selected: Option<(String, Option<String>)> = connection
         .query_row(
@@ -466,7 +561,13 @@ fn snapshot(connection: &Connection) -> Result<Snapshot> {
             [&thread],
             |r| r.get(0),
         )?;
-        snapshot.diagnostic = thread_diagnostic.or(snapshot.diagnostic);
+        snapshot.diagnostic = thread_diagnostic.map(|message| {
+            if message == "Source accounting stopped after an unsupported record" {
+                "Some historical usage remains unavailable until its source is replayed and validated".into()
+            } else {
+                message
+            }
+        }).or(snapshot.diagnostic);
         snapshot.thread_id = Some(thread);
         snapshot.observed_at = timestamp;
         snapshot.direct_tokens = total.map(|n| n.to_string());
@@ -515,6 +616,20 @@ fn ingest_usage(
     let encoded = serde_json::to_string(usage)?;
     let endpoint = serde_json::to_string(&usage.thread_token_usage)?;
     let time = adapter::observation_time(timestamp);
+    // Replay validation precedes duplicate handling. Only a new generation's
+    // clean prefix can reconsider previously suppressed (not invalid) usage.
+    let (thread, halted, generation): (Option<String>, bool, i64) = tx.query_row(
+        "SELECT thread_id,halted,generation FROM sources WHERE path=?",
+        [path],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
+    let validation = if halted {
+        Err("Source accounting stopped after an unsupported record")
+    } else if thread.as_ref().is_some_and(|id| id != &usage.thread_id) {
+        Err("Metadata and direct thread identity conflict")
+    } else {
+        time.and_then(|_| accounting::reconcile(&usage.usage, &usage.thread_token_usage, None))
+    };
     let prior: Option<(i64, String, String, String)> = tx.query_row(
         "SELECT id,normalized,timestamp,state FROM observations WHERE thread_id=? AND (endpoint=? OR (response_id IS NOT NULL AND response_id=?)) ORDER BY id LIMIT 1",
         params![usage.thread_id, endpoint, usage.response_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).optional()?;
@@ -527,23 +642,23 @@ fn ingest_usage(
                 true,
             )?;
             tx.execute("UPDATE observations SET state='rejected',diagnostic='Conflicting usage identity; pending usage unavailable' WHERE id=? AND state='pending'",[id])?;
+        } else if let Err(message) = validation {
+            // An immutable duplicate does not make this replay prefix valid.
+            // Restore its source halt without rewriting the stored decision.
+            diagnostic(tx, path, message, true)?;
         } else if state == "pending" {
             reconcile_candidate(tx, id)?;
+        } else if state == "rejected"
+            && validation.is_ok()
+            && thread.as_ref() == Some(&usage.thread_id)
+        {
+            let recovered = tx.execute("UPDATE observations SET state='pending',diagnostic=? WHERE id=? AND accepted=0 AND state='rejected' AND diagnostic='Source accounting stopped after an unsupported record' AND source_path=? AND source_generation<?",params![GAP,id,path,generation])?;
+            if recovered != 0 {
+                reconcile_candidate(tx, id)?;
+            }
         }
         return Ok(());
     }
-    let (thread, halted): (Option<String>, bool) = tx.query_row(
-        "SELECT thread_id,halted FROM sources WHERE path=?",
-        [path],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
-    let validation = if halted {
-        Err("Source accounting stopped after an unsupported record")
-    } else if thread.as_ref().is_some_and(|id| id != &usage.thread_id) {
-        Err("Metadata and direct thread identity conflict")
-    } else {
-        time.and_then(|_| accounting::reconcile(&usage.usage, &usage.thread_token_usage, None))
-    };
     tx.execute(
         "INSERT OR IGNORE INTO sessions(thread_id) VALUES(?)",
         [&usage.thread_id],
@@ -564,10 +679,6 @@ fn ingest_usage(
         )
         .optional()?
         .flatten();
-    let generation: i64 =
-        tx.query_row("SELECT generation FROM sources WHERE path=?", [path], |r| {
-            r.get(0)
-        })?;
     let parsed = time.ok();
     tx.execute("INSERT INTO observations(thread_id,endpoint,response_id,timestamp,normalized,adapter,source_path,source_offset,source_ordinal,model,accepted,total,diagnostic,source_generation,state,time_seconds,time_nanos,endpoint_order,start_order) VALUES(?,?,?,?,?,?,?,?,?,?,0,NULL,?,?,?,?,?,?,?)",
         params![usage.thread_id, endpoint, usage.response_id, timestamp, encoded, adapter::VERSION, path, offset, ordinal, model, message,generation,if validation.is_ok() { "pending" } else { "rejected" },parsed.map(|t| t.0),parsed.map(|t| t.1),accounting::endpoint_key(&usage.thread_token_usage),accounting::start_key(&usage.usage,&usage.thread_token_usage)])?;

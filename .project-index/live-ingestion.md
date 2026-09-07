@@ -12,7 +12,7 @@
 
 ## Persistence
 - Owner: `src-tauri/src/storage.rs`; migrations: `src-tauri/migrations/`; symbols: `batch`, `source_state`, `restart_source`, `reconcile_pending`.
-- Responsibility: Atomically commit bounded usage batches, generation/tail verification metadata, and queued chronological promotion; preserve confirmed observations and prepare one direct-session snapshot.
+- Responsibility: Atomically commit bounded usage batches, provenance-bearing parent/location evidence, generation/tail metadata, and queued chronological promotion; preserve confirmed observations and prepare one direct-session snapshot.
 - Look here when: Changing recovery persistence, late-history reconciliation, or normalized storage.
 
 ## Desktop updates

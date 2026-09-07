@@ -145,7 +145,7 @@ fn recovery_v2_migration_and_snapshot_query_plan() {
             .connection()
             .query_row::<i64, _, _>("PRAGMA user_version", [], |r| r.get(0))
             .unwrap(),
-        3
+        4
     );
     assert_eq!(
         store.snapshot().unwrap().direct_tokens.as_deref(),
@@ -907,7 +907,8 @@ fn adapter_drops_content_and_preserves_missing_versus_null_categories() {
     assert!(normalized["usage"]["reasoning_output_tokens"].is_null());
     let adapter::Record::Metadata(meta) = adapter::decode(br#"{"type":"session_meta","payload":{"id":"child","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent"}}}}}"#).unwrap() else { panic!("metadata required") };
     let metadata = serde_json::to_value(meta).unwrap();
-    assert_eq!(metadata["parent_thread_id"], "parent");
+    assert!(metadata["parent_thread_id"].is_null());
+    assert_eq!(metadata["nested_parent_thread_id"], "parent");
     assert!(metadata.get("source").is_none());
 }
 
@@ -1080,6 +1081,295 @@ fn settle(store: &mut Store) {
 
 fn totals(store: &Store) -> (i64, i64, i64) {
     store.connection().query_row("SELECT COALESCE(SUM(total),0),COALESCE(SUM(state='pending'),0),COALESCE(SUM(state='accepted'),0) FROM observations",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap()
+}
+
+#[test]
+fn metadata_candidates_preserve_usage_provenance_and_ambiguity() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("metadata.sqlite");
+    let mut store = Store::open(&db).unwrap();
+    let mut metadata = serde_json::json!({"type":"session_meta","payload":{
+        "id":"root-active","parent_thread_id":"parent-a","cwd":"C:/workspace/a",
+        "source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent-a"}}},
+        "prompt":"FORBIDDEN", "instructions":"FORBIDDEN"
+    }});
+    record_in_store(&mut store, "source", &metadata);
+    let state = |store: &Store| {
+        store.connection().query_row("SELECT parent_thread_id,parent_state,location_state FROM sessions WHERE thread_id='root-active'", [], |r| Ok((r.get::<_,Option<String>>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).unwrap()
+    };
+    assert_eq!(
+        state(&store),
+        (
+            Some("parent-a".into()),
+            "available".into(),
+            "available".into()
+        )
+    );
+    record_in_store(&mut store, "source", &historical_record(1));
+    metadata["payload"]["source"]["subagent"]["thread_spawn"]["parent_thread_id"] =
+        "parent-b".into();
+    metadata["payload"]["cli_version"] = "new-version".into();
+    record_in_store(&mut store, "source", &metadata);
+    record_in_store(
+        &mut store,
+        "source",
+        &serde_json::json!({"type":"turn_context","payload":{"turn_id":"other-turn","cwd":"C:/workspace/b","workspace_roots":["C:/workspace/b","C:/workspace/c"]}}),
+    );
+    record_in_store(&mut store, "source", &historical_record(2));
+    assert_eq!(totals(&store), (2 * 26587, 0, 2));
+    assert_eq!(
+        state(&store),
+        (None, "ambiguous".into(), "ambiguous".into())
+    );
+    assert_eq!(
+        store
+            .connection()
+            .query_row::<i64, _, _>("SELECT halted FROM sources WHERE path='source'", [], |r| r
+                .get(0))
+            .unwrap(),
+        0
+    );
+    let parents: i64 = store
+        .connection()
+        .query_row(
+            "SELECT COUNT(DISTINCT origin) FROM metadata_evidence WHERE kind='parent'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(parents, 2);
+    assert_eq!(
+        store
+            .connection()
+            .query_row::<i64, _, _>(
+                "SELECT COUNT(*) FROM metadata_evidence WHERE value LIKE '%FORBIDDEN%'",
+                [],
+                |r| r.get(0)
+            )
+            .unwrap(),
+        0
+    );
+    let evidence_before: i64 = store
+        .connection()
+        .query_row("SELECT COUNT(*) FROM metadata_evidence", [], |r| r.get(0))
+        .unwrap();
+    drop(store);
+    let mut store = Store::open(&db).unwrap();
+    assert_eq!(
+        state(&store),
+        (None, "ambiguous".into(), "ambiguous".into())
+    );
+    record_in_store(&mut store, "replay", &metadata);
+    record_in_store(&mut store, "replay", &historical_record(2));
+    assert_eq!(totals(&store), (2 * 26587, 0, 2));
+    assert!(
+        store
+            .connection()
+            .query_row::<i64, _, _>("SELECT COUNT(*) FROM metadata_evidence", [], |r| r.get(0))
+            .unwrap()
+            > evidence_before
+    );
+    metadata["payload"]["id"] = "different-direct-thread".into();
+    record_in_store(&mut store, "source", &metadata);
+    record_in_store(&mut store, "source", &historical_record(3));
+    assert_eq!(totals(&store), (2 * 26587, 0, 2));
+    assert_eq!(
+        store
+            .connection()
+            .query_row::<i64, _, _>("SELECT halted FROM sources WHERE path='source'", [], |r| r
+                .get(0))
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn metadata_migration_backfills_only_recoverable_projections() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("v3.sqlite");
+    let connection = rusqlite::Connection::open(&db).unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/001_initial.sql"))
+        .unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/002_resumable_sources.sql"))
+        .unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/003_snapshot_chronology.sql"))
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO sessions(thread_id,metadata) VALUES('root-active',?)",
+            [r#"{"id":"root-active","parent_thread_id":"parent","cwd":"C:/project"}"#],
+        )
+        .unwrap();
+    connection.execute("INSERT INTO sources(path,thread_id,halted,diagnostic) VALUES('old','root-active',1,'Conflicting session identity or metadata')", []).unwrap();
+    drop(connection);
+    let mut store = Store::open(&db).unwrap();
+    assert_eq!(
+        store
+            .connection()
+            .query_row::<i64, _, _>("SELECT halted FROM sources WHERE path='old'", [], |r| r
+                .get(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store
+            .connection()
+            .query_row::<i64, _, _>(
+                "SELECT COUNT(*) FROM metadata_evidence WHERE origin='legacy_projection'",
+                [],
+                |r| r.get(0)
+            )
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        store
+            .connection()
+            .query_row::<i64, _, _>(
+                "SELECT COUNT(*) FROM metadata_evidence WHERE kind='workspace_root'",
+                [],
+                |r| r.get(0)
+            )
+            .unwrap(),
+        0
+    );
+    record_in_store(&mut store, "usage", &historical_record(1));
+    assert_eq!(
+        store.snapshot().unwrap().direct_tokens.as_deref(),
+        Some("26587")
+    );
+}
+
+#[test]
+fn metadata_historical_suppression_requires_clean_fresh_generation_replay() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("replay.sqlite");
+    let path = temp.path().join("rollout-replay.jsonl");
+    let key = path.to_string_lossy();
+    let meta =
+        serde_json::json!({"type":"session_meta","payload":{"id":"root-active","cwd":"C:/old"}});
+    let first = line(&meta) + &line(&historical_record(1));
+    fs::write(&path, &first).unwrap();
+    let mut store = Store::open(&db).unwrap();
+    source::ingest(&mut store, &path).unwrap();
+    // Reproduce v3's conflated halt, with immutable confirmed usage preceding it.
+    store.connection().execute("UPDATE sources SET halted=1,diagnostic='Conflicting session identity or metadata' WHERE path=?", [&*key]).unwrap();
+    append(&path, &line(&historical_record(2)));
+    source::ingest(&mut store, &path).unwrap();
+    assert_eq!(totals(&store), (26587, 0, 1));
+    let original: (String,i64,i64) = store.connection().query_row("SELECT normalized,source_generation,source_offset FROM observations WHERE response_id='history-2'", [], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+    drop(store);
+    let mut store = Store::open(&db).unwrap();
+    source::ingest(&mut store, &path).unwrap();
+    assert_eq!(totals(&store), (26587, 0, 1));
+    assert!(store.snapshot().unwrap().coverage.contains("Incomplete"));
+
+    // Replacement triggers the existing offset-zero generation recovery. A true
+    // identity conflict in its prefix must still prevent duplicate-row recovery.
+    let wrong = serde_json::json!({"type":"session_meta","payload":{"id":"other-thread"}});
+    fs::write(
+        &path,
+        first.clone() + &line(&wrong) + &line(&historical_record(2)),
+    )
+    .unwrap();
+    source::ingest(&mut store, &path).unwrap();
+    assert_eq!(totals(&store), (26587, 0, 1));
+    assert_eq!(
+        store
+            .connection()
+            .query_row::<i64, _, _>("SELECT halted FROM sources WHERE path=?", [&*key], |r| r
+                .get(0))
+            .unwrap(),
+        1
+    );
+
+    let changed = serde_json::json!({"type":"session_meta","payload":{"id":"root-active","parent_thread_id":"parent-a","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent-b"}}},"cwd":"C:/new"}});
+    fs::write(
+        &path,
+        line(&changed) + &line(&historical_record(1)) + &line(&historical_record(2)),
+    )
+    .unwrap();
+    source::ingest(&mut store, &path).unwrap();
+    assert_eq!(totals(&store), (2 * 26587, 0, 2));
+    let after: (String,i64,i64) = store.connection().query_row("SELECT normalized,source_generation,source_offset FROM observations WHERE response_id='history-2'", [], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+    assert_eq!(original, after);
+    source::ingest(&mut store, &path).unwrap();
+    assert_eq!(totals(&store), (2 * 26587, 0, 2));
+    // Explicit rejects are sticky even when a clean replay presents identical data.
+    store.connection().execute("UPDATE observations SET accepted=0,total=NULL,state='rejected',diagnostic='Conflicting usage identity; pending usage unavailable' WHERE response_id='history-2'", []).unwrap();
+    fs::write(&path, first + &line(&historical_record(2))).unwrap();
+    source::ingest(&mut store, &path).unwrap();
+    assert_eq!(totals(&store), (26587, 0, 1));
+}
+
+#[test]
+fn metadata_replay_invalid_duplicate_prefix_keeps_later_usage_suppressed() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("invalid-prefix.sqlite");
+    let path = temp.path().join("rollout-invalid-prefix.jsonl");
+    let key = path.to_string_lossy();
+    let meta = serde_json::json!({"type":"session_meta","payload":{"id":"root-active"}});
+    let mut invalid = historical_record(1);
+    invalid["payload"]["usage"]
+        .as_object_mut()
+        .unwrap()
+        .remove("cached_input_tokens");
+    fs::write(
+        &path,
+        line(&meta) + &line(&invalid) + &line(&historical_record(2)),
+    )
+    .unwrap();
+    let mut store = Store::open(&db).unwrap();
+    source::ingest(&mut store, &path).unwrap();
+    assert_eq!(totals(&store), (0, 0, 0));
+    let rejected = |store: &Store| {
+        store
+            .connection()
+            .prepare("SELECT response_id,state,diagnostic,normalized FROM observations ORDER BY id")
+            .unwrap()
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    };
+    let before = rejected(&store);
+    assert_eq!(before.len(), 2);
+    assert_eq!(
+        before[1].2,
+        "Source accounting stopped after an unsupported record"
+    );
+    let state = store.source_state(&key).unwrap();
+    store
+        .restart_source(
+            &key,
+            state.generation,
+            state.identity.as_deref(),
+            fs::metadata(&path).unwrap().len(),
+        )
+        .unwrap();
+    drop(store);
+    let mut store = Store::open(&db).unwrap();
+    source::ingest(&mut store, &path).unwrap();
+    assert_eq!(totals(&store), (0, 0, 0));
+    assert_eq!(rejected(&store), before);
+    assert_eq!(
+        store
+            .connection()
+            .query_row::<i64, _, _>("SELECT halted FROM sources WHERE path=?", [&*key], |r| r
+                .get(0))
+            .unwrap(),
+        1
+    );
 }
 
 #[test]
@@ -1402,7 +1692,7 @@ fn version_one_migration_preserves_usage_and_promotes_its_pending_gap() {
         .connection()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 3);
+    assert_eq!(version, 4);
     assert_eq!(totals(&store), (4 * 26587, 0, 4));
 }
 

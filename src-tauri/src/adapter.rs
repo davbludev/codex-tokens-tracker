@@ -91,7 +91,10 @@ pub struct Metadata {
     pub id: String,
     pub session_id: Option<String>,
     pub parent_thread_id: Option<String>,
+    #[serde(default, skip_deserializing)]
+    pub nested_parent_thread_id: Option<String>,
     pub cwd: Option<String>,
+    pub workspace_roots: Option<Vec<String>>,
     pub cli_version: Option<String>,
     #[serde(skip_serializing)]
     source: Option<MetadataSource>,
@@ -114,6 +117,8 @@ struct ThreadSpawn {
 pub struct Context {
     pub turn_id: String,
     pub model: Option<String>,
+    pub cwd: Option<String>,
+    pub workspace_roots: Option<Vec<String>>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LimitWindow {
@@ -166,10 +171,7 @@ pub fn decode(line: &[u8]) -> Result<Record, &'static str> {
                     .thread_spawn
                     .and_then(|spawn| spawn.parent_thread_id)
                 {
-                    if meta.parent_thread_id.as_ref().is_some_and(|p| p != &parent) {
-                        return Err("Conflicting parent thread metadata");
-                    }
-                    meta.parent_thread_id = Some(parent);
+                    meta.nested_parent_thread_id = Some(parent);
                 }
             }
             if meta.id.is_empty() || meta.id.len() > 512 {
