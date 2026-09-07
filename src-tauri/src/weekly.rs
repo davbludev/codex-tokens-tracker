@@ -68,7 +68,7 @@ pub struct Cycle {
     pub has_ambiguous_observations: bool,
     pub full_cycle_cost_known: bool,
 }
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Cost {
     /// Canonical integer trillionths of USD, never a floating-point subtotal.
@@ -76,7 +76,7 @@ pub struct Cost {
     pub complete: bool,
     pub accepted_observations: u64,
 }
-#[derive(Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum Unavailable {
     InsufficientObservations,
@@ -271,7 +271,7 @@ impl Timeline {
             }
         }
     }
-    fn flush(&mut self) {
+    pub(crate) fn flush(&mut self) {
         let Some(mut sample) = self.group.take() else {
             return;
         };

@@ -59,6 +59,22 @@ pub async fn usage_weekly(
         .map_err(|_| crate::weekly::ReadError::Storage)?
 }
 
+#[tauri::command]
+pub async fn usage_dashboard(
+    app: tauri::AppHandle,
+    query: crate::dashboard::Query,
+) -> std::result::Result<crate::dashboard::Response, crate::weekly::ReadError> {
+    query.validate()?;
+    let path = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| crate::weekly::ReadError::Storage)?
+        .join("usage.sqlite");
+    tauri::async_runtime::spawn_blocking(move || Store::read_dashboard(&path, query))
+        .await
+        .map_err(|_| crate::weekly::ReadError::Storage)?
+}
+
 fn publish(app: &tauri::AppHandle, snapshot: Snapshot) {
     if let Ok(mut current) = app.state::<State>().0.lock() {
         *current = snapshot.clone();

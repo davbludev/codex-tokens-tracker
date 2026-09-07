@@ -116,6 +116,10 @@ impl Store {
     }
 }
 
+pub(super) fn global_summary(tx: &Transaction<'_>) -> Result<dto::Summary, ReadError> {
+    summary(tx, &Selection::all(), None)
+}
+
 fn summary(
     tx: &Transaction<'_>,
     selection: &Selection,

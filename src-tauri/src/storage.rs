@@ -4,6 +4,7 @@ use crate::{
     identity, identity_filesystem,
 };
 mod aggregates;
+mod dashboard;
 mod hierarchy;
 pub(crate) mod pricing;
 mod weekly;

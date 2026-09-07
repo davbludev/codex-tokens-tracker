@@ -5,3 +5,4 @@
 - [Usage aggregates](aggregates.md) — Prepared direct/inclusive summaries and bounded query delivery.
 - [Model pricing](pricing.md) — Exact rates, immutable valuations, and bounded pricing persistence.
 - [Weekly observations](weekly.md) — Cycles, comparable cost intervals, and exact percentage estimates.
+- [Frontend dependencies](frontend-dependencies.md) — npm packages and frontend build entry point.

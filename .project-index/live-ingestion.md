@@ -32,8 +32,8 @@
 
 ## Presentation
 - Owner: `src/main.tsx`; stylesheet: `src/style.css`.
-- Responsibility: Display direct tokens, observation time, coverage, and diagnostics.
-- Look here when: Changing the desktop snapshot UI.
+- Responsibility: Mount the dashboard and Model Pricing dialog, and display source status and connection diagnostics.
+- Look here when: Changing the desktop app shell or pricing entry point.
 
 ## Ingestion checks
 - Owner: `src-tauri/src/tests.rs`.
