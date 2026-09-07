@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./style.css";
+import { ModelPricing } from "./ModelPricing";
 
 type Snapshot = {
   threadId: string | null;
@@ -14,6 +15,7 @@ type Snapshot = {
 };
 
 function App() {
+  const [pricingOpen, setPricingOpen] = useState(false);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -39,7 +41,8 @@ function App() {
   }, []);
   const tokens = snapshot?.directTokens;
   return <main>
-    <header><h1>Codex usage</h1><span className="status">{snapshot?.sourceAvailable ? "Watching local sessions" : "Source unavailable"}</span></header>
+    <header><h1>Codex usage</h1><span className="status">{snapshot?.sourceAvailable ? "Watching local sessions" : "Source unavailable"}</span><button type="button" onClick={() => setPricingOpen(true)}>Model Pricing</button></header>
+    <ModelPricing open={pricingOpen} onClose={() => setPricingOpen(false)} />
     <section aria-labelledby="direct-heading">
       <h2 id="direct-heading">Direct session tokens</h2>
       <p className="value" aria-live="polite" aria-atomic="true">{tokens != null ? BigInt(tokens).toLocaleString() : "Unavailable"}</p>

@@ -1,3 +1,4 @@
+pub(crate) mod pricing;
 pub(crate) mod runtime;
 
 use crate::{
@@ -68,19 +69,28 @@ fn failure(app: &tauri::AppHandle, message: &str) {
 /// is absent, watch one existing parent and advance toward the home on events.
 pub(crate) struct NativeWatch {
     watcher: notify::RecommendedWatcher,
-    pub receive: mpsc::Receiver<notify::Result<notify::Event>>,
+    pub receive: mpsc::Receiver<pricing::Message>,
     pub overflow: Arc<AtomicBool>,
     home: PathBuf,
     watched: Vec<PathBuf>,
 }
 
 impl NativeWatch {
+    #[cfg(test)]
     pub fn new(home: &Path) -> notify::Result<Self> {
-        let (send, receive) = mpsc::sync_channel(256);
+        let (control, receive) = pricing::channel();
+        Self::with_inbox(home, control, receive)
+    }
+
+    fn with_inbox(
+        home: &Path,
+        control: pricing::Control,
+        receive: mpsc::Receiver<pricing::Message>,
+    ) -> notify::Result<Self> {
         let overflow = Arc::new(AtomicBool::new(false));
         let callback_overflow = overflow.clone();
         let watcher = notify::recommended_watcher(move |event| {
-            if send.try_send(event).is_err() {
+            if control.0.try_send(pricing::Message::Source(event)).is_err() {
                 callback_overflow.store(true, Ordering::Relaxed);
             }
         })?;
@@ -187,7 +197,7 @@ impl NativeWatch {
     }
 }
 
-pub fn start(app: tauri::AppHandle, database: PathBuf) {
+pub fn start(app: tauri::AppHandle, database: PathBuf, receive: mpsc::Receiver<pricing::Message>) {
     std::thread::spawn(move || {
         let Some(directory) = source::sessions_directory() else {
             failure(&app, "Codex home could not be discovered");
@@ -208,7 +218,8 @@ pub fn start(app: tauri::AppHandle, database: PathBuf) {
             }
         };
         // Subscribe before opening the first discovery iterator.
-        let mut native = match NativeWatch::new(&home) {
+        let control = app.state::<pricing::Control>().inner().clone();
+        let mut native = match NativeWatch::with_inbox(&home, control, receive) {
             Ok(watcher) => watcher,
             Err(_) => {
                 failure(&app, "Native source watcher could not start");
@@ -226,7 +237,14 @@ pub fn start(app: tauri::AppHandle, database: PathBuf) {
                 .chain(native.receive.try_iter().take(255))
                 .collect();
             for event in events {
-                dirty |= native.accept(&mut work, event, Instant::now());
+                match event {
+                    pricing::Message::Source(event) => {
+                        dirty |= native.accept(&mut work, event, Instant::now())
+                    }
+                    pricing::Message::Pricing(request) => {
+                        pricing::handle(request, &mut store, &mut work)
+                    }
+                }
             }
             dirty |= native.recover_overflow(&mut work);
             match work.step(&mut store, Instant::now()) {

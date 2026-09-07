@@ -612,12 +612,14 @@ fn recovery_native_missing_home_and_sources_appear_without_restart() {
     fs::write(&path, line(&historical_record(1))).unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
     while totals(&store).0 != 26587 {
-        let event = native
+        let crate::commands::pricing::Message::Source(event) = native
             .receive
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
             .unwrap()
-            .unwrap();
-        native.accept(&mut work, Ok(event), Instant::now());
+        else {
+            panic!("expected source event")
+        };
+        native.accept(&mut work, event, Instant::now());
         drain_work(
             &mut work,
             &mut store,
@@ -626,12 +628,14 @@ fn recovery_native_missing_home_and_sources_appear_without_restart() {
     }
     append(&path, &line(&historical_record(2)));
     while totals(&store).0 != 2 * 26587 {
-        let event = native
+        let crate::commands::pricing::Message::Source(event) = native
             .receive
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
             .unwrap()
-            .unwrap();
-        native.accept(&mut work, Ok(event), Instant::now());
+        else {
+            panic!("expected source event")
+        };
+        native.accept(&mut work, event, Instant::now());
         drain_work(
             &mut work,
             &mut store,

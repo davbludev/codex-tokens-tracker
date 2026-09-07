@@ -1,0 +1,49 @@
+# Model Pricing
+
+The desktop button opens a native modal HTML dialog. Detected model names load
+in bounded pages; a failed page leaves the loaded models available and offers
+retry. Reopening or reloading refreshes the catalog. Draft strings survive model
+switches, reloads, errors, and closing the dialog for the lifetime of the app.
+
+Prices are USD per million tokens, validated as nonnegative decimal strings
+with at most six fractional digits. The server owns validation and effective
+time. Reasoning and cache-write choices use the existing pricing domain rules;
+unknown interpretation leaves affected usage unpriced. Initial backfill is
+unchecked by default and offered only before a model has a configured price.
+Later saves create future-effective versions. Existing valuations stay immutable.
+
+## Delivery boundary
+
+`pricing_models({ after: string | null })` returns `{ models, nextCursor }`.
+The cursor is the exact final model name for a full 64-item page, otherwise null.
+Each model contains its latest price version, if any. Pages do not represent a
+frozen snapshot; callers deduplicate model names and restart when refreshing.
+
+`save_model_price({ model, configuration, backfillBefore })` returns the committed
+price version. Configuration keys are camelCase, while policy values use
+snake_case (`included_input_disjoint`, for example). Rates cross IPC as strings.
+
+Both operations use the same bounded inbox as native source events. The sole
+writer processes a bounded inbox batch before advancing ingestion/pricing work.
+A save commits the version and durable job, requests the pricing lane, then
+replies. The normal `usage-updated` publication follows pricing progress. There
+is no idle polling or second writable connection.
+
+Errors expose a safe `code`, optional form `field`, and actionable `message`.
+Full/disconnected inboxes return `busy`/`unavailable`. Invalid requests fail only
+that request; storage internals are not sent to the frontend. The UI never
+automatically retries a save. After a connection/storage failure, reload models
+before retrying to check whether a version was committed.
+
+## Focused browser verification
+
+`node tests/pricing-ui.mjs` requires an available Playwright package and installed
+Microsoft Edge. If Playwright is supplied outside the project, set
+`PLAYWRIGHT_MODULE` to its absolute `index.mjs` path. No package is added to the
+application. The test starts its own Vite server on port 1421, uses a controlled
+Tauri bridge, and closes the server/browser afterward. Set `PRICING_SCREENSHOT`
+to an output PNG path to capture the narrow dialog for inspection.
+
+This verifies the browser form/transport contract, not a live native Tauri
+session. Backend pricing IPC tests exercise the actual writer request handler,
+commit ordering, idle wake, safe errors, and catalog pagination.

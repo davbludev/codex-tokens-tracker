@@ -71,6 +71,176 @@ fn drain(store: &mut Store) {
 }
 
 #[test]
+fn pricing_ipc_idle_save_commits_wakes_and_invalid_save_keeps_writer_usable() {
+    use crate::commands::{
+        pricing::{channel, handle, Message, Request},
+        runtime::Work,
+    };
+    use std::time::{Duration, Instant};
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("ipc.sqlite");
+    let mut store = Store::open(&db).unwrap();
+    context(&mut store, "history", "thread", Some("alpha"));
+    let id = usage(&mut store, "history", "thread", 1, "2026-01-01T00:00:01Z");
+    let mut work = Work::new(temp.path());
+    super::drain_work(&mut work, &mut store, Instant::now());
+    assert!(!work.busy());
+    let (control, inbox) = channel();
+    std::thread::scope(|scope| {
+        let caller = scope.spawn(|| {
+            let mut invalid = prices();
+            invalid.input = "NaN".into();
+            let failure = control
+                .request(|reply| Request::Save {
+                    model: "alpha".into(),
+                    configuration: invalid,
+                    backfill_before: true,
+                    reply,
+                })
+                .unwrap_err();
+            assert_eq!(failure.field, Some("input"));
+            assert_eq!(failure.code, "invalid_rate");
+            let version = control
+                .request(|reply| Request::Save {
+                    model: "alpha".into(),
+                    configuration: prices(),
+                    backfill_before: true,
+                    reply,
+                })
+                .unwrap();
+            let reader = rusqlite::Connection::open(&db).unwrap();
+            let persisted: i64 = reader
+                .query_row(
+                    "SELECT COUNT(*) FROM model_price_versions WHERE id=?",
+                    [version.id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(persisted, 1, "reply must follow commit");
+        });
+        // Same inbox wait used by the idle production loop; no filesystem event.
+        for expected_busy in [false, true] {
+            let Message::Pricing(request) = inbox.recv_timeout(Duration::from_secs(5)).unwrap()
+            else {
+                panic!()
+            };
+            handle(request, &mut store, &mut work);
+            assert_eq!(work.busy(), expected_busy);
+        }
+        caller.join().unwrap();
+    });
+    assert!(store.pricing_work_pending().unwrap());
+    assert!(
+        work.step(&mut store, Instant::now()).unwrap(),
+        "pricing must dirty publication"
+    );
+    super::drain_work(&mut work, &mut store, Instant::now());
+    assert_eq!(
+        store.observation_valuation(id).unwrap().unwrap().amount,
+        "210000000"
+    );
+    assert!(!store.pricing_work_pending().unwrap());
+    let (reply, result) = std::sync::mpsc::channel();
+    handle(
+        Request::Save {
+            model: "alpha".into(),
+            configuration: prices(),
+            backfill_before: true,
+            reply,
+        },
+        &mut store,
+        &mut work,
+    );
+    assert_eq!(
+        result.recv().unwrap().unwrap_err().code,
+        "backfill_only_first"
+    );
+    assert!(!work.busy());
+}
+
+#[test]
+fn pricing_ipc_catalog_pages_exact_names_and_safe_storage_errors() {
+    use crate::commands::{
+        pricing::{handle, Request},
+        runtime::Work,
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&temp.path().join("catalog-ipc.sqlite")).unwrap();
+    for i in 0..65 {
+        store
+            .connection()
+            .execute(
+                "INSERT INTO detected_models(model) VALUES(?)",
+                [format!("model-{i:03}")],
+            )
+            .unwrap();
+    }
+    let mut work = Work::new(temp.path());
+    let (reply, result) = std::sync::mpsc::channel();
+    handle(
+        Request::Catalog { after: None, reply },
+        &mut store,
+        &mut work,
+    );
+    let page = result.recv().unwrap().unwrap();
+    assert_eq!(page.models.len(), 64);
+    assert_eq!(page.next_cursor.as_deref(), Some("model-063"));
+    let (reply, result) = std::sync::mpsc::channel();
+    handle(
+        Request::Catalog {
+            after: page.next_cursor,
+            reply,
+        },
+        &mut store,
+        &mut work,
+    );
+    let page = result.recv().unwrap().unwrap();
+    assert_eq!(page.models[0].model, "model-064");
+    assert!(page.models[0].latest_price.is_none());
+    assert!(page.next_cursor.is_none());
+    store
+        .connection()
+        .execute_batch("DROP TABLE detected_models")
+        .unwrap();
+    let (reply, result) = std::sync::mpsc::channel();
+    handle(
+        Request::Catalog { after: None, reply },
+        &mut store,
+        &mut work,
+    );
+    let error = serde_json::to_value(result.recv().unwrap().unwrap_err()).unwrap();
+    assert_eq!(error["code"], "storage");
+    assert!(!error.to_string().contains("detected_models"));
+}
+
+#[test]
+fn pricing_ipc_full_and_disconnected_inbox_fail_without_replaying() {
+    use crate::commands::pricing::{channel, Message, Request};
+    let (control, inbox) = channel();
+    for _ in 0..256 {
+        assert!(control
+            .0
+            .try_send(Message::Source(Ok(notify::Event::new(
+                notify::EventKind::Any
+            ))))
+            .is_ok());
+    }
+    let error = control
+        .request(|reply| Request::Catalog { after: None, reply })
+        .unwrap_err();
+    assert_eq!(error.code, "busy");
+    assert_eq!(inbox.try_iter().count(), 256);
+    drop(inbox);
+    assert_eq!(
+        control
+            .request(|reply| Request::Catalog { after: None, reply })
+            .unwrap_err()
+            .code,
+        "unavailable"
+    );
+}
+
+#[test]
 fn pricing_runtime_resumes_bounded_batches_and_publishes_without_starving_reads() {
     use crate::{
         aggregates::{Data, Query},

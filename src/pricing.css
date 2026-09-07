@@ -1,0 +1,20 @@
+button, input, select { font: inherit; }
+button { padding: 8px 12px; cursor: pointer; border: 1px solid #62748a; border-radius: 4px; background: #25394e; color: #e7edf5; }
+button:disabled { opacity: .65; cursor: default; }
+:focus-visible { outline: 2px solid #9acaff; outline-offset: 3px; }
+.model-pricing { color: #e7edf5; background: #121820; border: 1px solid #62748a; border-radius: 8px; padding: 20px; width: min(760px, calc(100% - 24px)); max-height: calc(100% - 24px); overflow: auto; }
+.model-pricing::backdrop { background: #000a; }
+.model-pricing h2 { font-size: 20px; }
+.model-pricing p { font-size: 14px; line-height: 1.5; margin: 10px 0 16px; }
+.model-pricing label { display: block; margin: 10px 0 6px; }
+.model-pricing input:not([type=checkbox]), .model-pricing select { display: block; width: 100%; min-width: 0; padding: 8px; border: 1px solid #62748a; border-radius: 4px; background: #1b2531; color: inherit; }
+.model-pricing fieldset { padding: 12px; border: 1px solid #394351; min-width: 0; margin-top: 16px; }
+.model-pricing legend { overflow-wrap: anywhere; }
+.model-picker { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
+.model-picker label { grid-column: 1 / -1; margin-bottom: 0; }
+.rate-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 16px; }
+.model-pricing .backfill-option { display: flex; align-items: flex-start; gap: 10px; padding: 12px; border: 1px solid #62748a; border-radius: 4px; cursor: pointer; font-size: 14px; line-height: 1.5; }
+.backfill-option input { flex-shrink: 0; margin-top: 4px; }
+.model-pricing .field-error { color: #ffb6ad; margin: 6px 0 12px; }
+.model-pricing [aria-invalid=true] { border-color: #ffb6ad !important; }
+@media (max-width: 500px) { .rate-grid, .model-picker { grid-template-columns: 1fr; } .model-pricing { padding: 14px; } }
