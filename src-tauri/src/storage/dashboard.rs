@@ -9,6 +9,7 @@ use std::{
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
+mod quota;
 mod usage;
 
 impl Store {
@@ -111,9 +112,10 @@ impl Store {
             downsample.push(point, boundary);
             Ok(())
         })?;
+        let quota_analysis = quota::read(&tx, start, now)?;
         Ok(dto::Response { evaluated_at: now, weekly, global,
             token_scope: "All locally observed history; direct session usage counted once. Cached input and reasoning overlap other categories; do not add categories.",
-            chart: downsample.finish(), local_usage, breakdowns })
+            chart: downsample.finish(), local_usage, breakdowns, quota_analysis })
     }
 }
 

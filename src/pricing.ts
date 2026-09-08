@@ -21,8 +21,8 @@ export const rateFields = ["input", "cachedInput", "cacheWrite", "output", "reas
 export const rateLabels = { input: "Input", cachedInput: "Cached input", cacheWrite: "Cache write", output: "Output", reasoning: "Reasoning" };
 
 export function newDraft(model: DetectedModel): Draft {
-  return { input: "", cachedInput: "", cacheWrite: "", output: "", reasoningPolicy: "unknown", cacheWritePolicy: "unknown",
-    ...model.latestPrice?.configuration, reasoning: model.latestPrice?.configuration.reasoning ?? "", backfillBefore: false };
+  return { input: "", cachedInput: "", cacheWrite: "", output: "",
+    ...model.latestPrice?.configuration, reasoning: "", reasoningPolicy: "included", cacheWritePolicy: "additional", backfillBefore: false };
 }
 
 export function validateDraft(draft: Draft): FieldErrors {

@@ -1,6 +1,7 @@
 import { DashboardChart } from "./DashboardChart";
 import { UsageChart } from "./UsageChart";
 import { UsageBreakdowns } from "./UsageBreakdowns";
+import { QuotaAnalysis } from "./QuotaAnalysis";
 import { compactCost, compactTokens, costText, exactTime, exactTokens, localTime, ranges, unavailable, usd, useDashboard } from "./dashboard-data";
 import type { WeeklyEstimate } from "./dashboard-types";
 import "./dashboard.css";
@@ -52,6 +53,7 @@ export function Dashboard({ onOpenPricing }: { onOpenPricing?: () => void }) {
         <h3 className="quota-chart-title">Weekly usage and estimated cost</h3>
         <DashboardChart chart={data.chart} />
       </section>
+      {data.quotaAnalysis && <QuotaAnalysis analysis={data.quotaAnalysis} now={data.evaluatedAt} />}
       <details className="dashboard-history-details"><summary>All-history totals and data coverage</summary>
         <h2>Locally observed global tokens · all history</h2>
         <dl className="dashboard-tokens">{([["totalTokens", "Total"], ["inputTokens", "Input"], ["cachedInputTokens", "Cached input"], ["cacheWriteTokens", "Cache writes"], ["reasoningTokens", "Reasoning"], ["outputTokens", "Output"]] as const).map(([key, label]) => {

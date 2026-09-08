@@ -111,7 +111,11 @@ export type DashboardResponse = {
   chart: DashboardChart;
   localUsage: LocalUsage;
   breakdowns: { metric: BreakdownMetric; models: UsageBreakdown[]; projects: UsageBreakdown[] };
+  quotaAnalysis: QuotaAnalysis;
 };
+
+export type QuotaInterval = { start: ObservationTime; end: ObservationTime; consumedPercentagePoints: string; tokens: GlobalSummary["tokens"] };
+export type QuotaAnalysis = { intervals: QuotaInterval[]; totalIntervals: number };
 
 export type LocalUsageSummary = Pick<GlobalSummary, "tokens" | "estimatedCost" | "observedSessions">;
 export type UsageBin = LocalUsageSummary & { index: number; start: ObservationTime; end: ObservationTime };

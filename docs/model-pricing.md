@@ -7,8 +7,11 @@ switches, reloads, errors, and closing the dialog for the lifetime of the app.
 
 Prices are USD per million tokens, validated as nonnegative decimal strings
 with at most six fractional digits. The server owns validation and effective
-time. Reasoning and cache-write choices use the existing pricing domain rules;
-unknown interpretation leaves affected usage unpriced. Initial backfill is
+time. The form uses one explicitly described monetary convention: reasoning is
+included in output, and cache writes are additional to input. These are valuation
+assumptions, not subscription quota rules. Historical price versions retain their
+original policies; saving uses the displayed convention for the new version.
+The dashboard's token-combination comparison requires no prices. Initial backfill is
 unchecked by default and offered only before a model has a configured price.
 Later saves create future-effective versions. Existing valuations stay immutable.
 

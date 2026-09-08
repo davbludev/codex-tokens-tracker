@@ -59,6 +59,23 @@ pub struct Response {
     pub chart: Chart,
     pub local_usage: LocalUsage,
     pub breakdowns: Breakdowns,
+    pub quota_analysis: QuotaAnalysis,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaInterval {
+    pub start: Time,
+    pub end: Time,
+    pub consumed_percentage_points: String,
+    pub tokens: aggregates::Tokens,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaAnalysis {
+    pub intervals: Vec<QuotaInterval>,
+    pub total_intervals: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]

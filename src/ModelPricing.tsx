@@ -83,25 +83,7 @@ export function ModelPricing({ open, onClose }: { open: boolean; onClose: () => 
           <input id={`price-${field}`} type="text" inputMode="decimal" value={draft[field]} onChange={event => update(field, event.target.value)} aria-invalid={!!errors[field]} aria-describedby={`pricing-rate-help${errors[field] ? ` error-${field}` : ""}`} />
           {errors[field] && <p className="field-error" id={`error-${field}`}>{errors[field]}</p>}
         </div>)}</div>
-        <label htmlFor="reasoning-policy">How should reasoning tokens be priced?</label>
-        <select id="reasoning-policy" value={draft.reasoningPolicy} onChange={event => update("reasoningPolicy", event.target.value as Draft["reasoningPolicy"])} aria-describedby="reasoning-help">
-          <option value="unknown">Unknown — leave affected usage unpriced</option>
-          <option value="included">Included in output price</option>
-          <option value="separate">Separate reasoning price</option>
-        </select>
-        <p id="reasoning-help">Reasoning is part of output. Included uses the output rate once; separate replaces that portion with your reasoning rate.</p>
-        {draft.reasoningPolicy === "separate" && <div>
-          <label htmlFor="price-reasoning">Reasoning (USD / 1M)</label>
-          <input id="price-reasoning" type="text" inputMode="decimal" value={draft.reasoning} onChange={event => update("reasoning", event.target.value)} aria-invalid={!!errors.reasoning} aria-describedby={`reasoning-help${errors.reasoning ? " error-reasoning" : ""}`} />
-          {errors.reasoning && <p className="field-error" id="error-reasoning">{errors.reasoning}</p>}
-        </div>}
-        <label htmlFor="cache-policy">How do cache-write tokens relate to input?</label>
-        <select id="cache-policy" value={draft.cacheWritePolicy} onChange={event => update("cacheWritePolicy", event.target.value as Draft["cacheWritePolicy"])} aria-describedby="cache-help">
-          <option value="unknown">Unknown — leave nonzero cache-write usage unpriced</option>
-          <option value="included_input_disjoint">Included in input, separate from cached input</option>
-          <option value="additional">Additional to input</option>
-        </select>
-        <p id="cache-help">Cached input replaces the input rate. Included cache writes replace a separate part of input; additional writes add to it. Unknown keeps affected usage unpriced.</p>
+        <p id="pricing-formula">Estimate formula: (input − cached input) × input rate + cached input × cached rate + cache writes × write rate + output × output rate. Reasoning is already inside output. This monetary estimate assumes additional cache writes; it does not describe subscription quota rules. Compare token combinations on the dashboard without configuring prices.</p>
         {!model.latestPrice ? <label className="backfill-option">
           <input type="checkbox" checked={draft.backfillBefore} onChange={event => update("backfillBefore", event.target.checked)} aria-invalid={!!errors.backfillBefore} aria-describedby={errors.backfillBefore ? "error-backfill" : undefined} />
           <span>Apply this first price to older unpriced usage for this model. Leaving this unchecked covers usage from the save time onward.</span>
