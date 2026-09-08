@@ -1,84 +1,75 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import uPlot from "uplot";
-import type { ObservationTime, QuotaAnalysis as Analysis } from "./dashboard-types";
+import type { QuotaAnalysis as Analysis } from "./dashboard-types";
 import { exactTime } from "./dashboard-data";
-import { combinations, combinationStats, combinationTokens, tokensPerPercent, type WriteInterpretation } from "./quota-combinations";
+import { combinations, combinationStats, perPercent, sample, type WriteInterpretation } from "./quota-combinations";
 import "./quota-analysis.css";
 
-const colors = ["#80b7ff", "#65d8ad", "#edbe74", "#c1a0ff", "#ef94ac", "#86dce5"];
-function savedChoices(): { writes: WriteInterpretation; selected: number[] } {
-  try {
-    const value = JSON.parse(localStorage.getItem("quota-combinations") ?? "null");
-    if (value && ["included", "additional"].includes(value.writes) && Array.isArray(value.selected) && value.selected.length <= 6 && value.selected.every((mask: unknown) => typeof mask === "number" && Number.isInteger(mask) && mask >= 1 && mask <= 31)) {
-      return { writes: value.writes, selected: [...new Set<number>(value.selected)] };
-    }
-  } catch { /* Storage is optional; comparison remains available. */ }
-  return { writes: "additional", selected: [31, 11, 3, 24] };
-}
-const number = (value: number | null) => value === null ? "—" : value.toLocaleString(undefined, { maximumFractionDigits: 2 });
-function exactNumber(value: string | null) {
-  if (value === null) return "—";
+function formatted(value: string | null, money = false) {
+  if (value === null) return "Unavailable";
   const [whole, fraction] = value.split(".");
-  return BigInt(whole).toLocaleString() + (fraction ? `.${fraction}` : "");
+  const separator = (1.1).toLocaleString().replace(/\d/g, "");
+  return (money ? "$" : "") + BigInt(whole).toLocaleString() + separator + fraction;
 }
-export function QuotaAnalysis({ analysis, now }: { analysis: Analysis; now: ObservationTime }) {
-  const [saved] = useState(savedChoices);
-  const [writes, setWrites] = useState<WriteInterpretation>(saved.writes);
-  const [selected, setSelected] = useState(saved.selected);
-  const [scope, setScope] = useState("range");
-  const [inspected, setInspected] = useState(0);
+export function QuotaAnalysis({ analysis }: { analysis: Analysis }) {
+  const [writes, setWrites] = useState<WriteInterpretation>("additional");
+  const [selected, setSelected] = useState(combinations.map(c => c.mask));
+  const [metric, setMetric] = useState<"usd" | "tokens">("usd");
+  const [inspected, setInspected] = useState<number | null>(null);
   const host = useRef<HTMLDivElement>(null);
+  const intervals = analysis.intervals;
+  const active = useMemo(() => combinations.filter(c => selected.includes(c.mask)), [selected]);
+  const rows = useMemo(() => combinations.map(c => ({ ...c, ...combinationStats(intervals, c.mask, writes) })), [intervals, writes]);
   useEffect(() => {
-    try { localStorage.setItem("quota-combinations", JSON.stringify({ writes, selected })); }
-    catch { /* A disabled local store does not prevent analysis. */ }
-  }, [writes, selected]);
-  const intervals = useMemo(() => analysis.intervals.filter(interval => scope === "range" || interval.start.seconds > now.seconds - 900 || interval.start.seconds === now.seconds - 900 && interval.start.nanos >= now.nanos), [analysis, now, scope]);
-  const rows = useMemo(() => combinations.map(combination => ({ ...combination, ...combinationStats(intervals, combination.mask, writes) })), [intervals, writes]);
-  const active = useMemo(() => selected.map(mask => combinations[mask - 1]), [selected]);
-  useEffect(() => {
-    setInspected(0);
-    if (!host.current || !intervals.length || !active.length) return;
-    const data: uPlot.AlignedData = [intervals.map(i => i.end.seconds + i.end.nanos / 1e9), ...active.map(({ mask }) => intervals.map(i => {
-      const tokens = combinationTokens(i, mask, writes);
-      return tokens === null ? null : Number(tokensPerPercent(tokens, i.consumedPercentagePoints));
+    if (!host.current || !intervals.length) return;
+    const data: uPlot.AlignedData = [intervals.map(i => i.end.seconds + i.end.nanos / 1e9), ...active.map(c => intervals.map(i => {
+      const value = sample(i, c.mask, writes);
+      const units = metric === "usd" ? value?.estimatedUsd : value?.tokens;
+      return units == null ? null : Number(perPercent(units, i.consumedPercentagePoints, metric === "usd" ? 12 : 0, 12));
     }))];
-    // Independent disjoint intervals are dots, not a continuous inferred rate.
-    const plot = new uPlot({ width: Math.max(240, host.current.clientWidth), height: 260,
+    const plot = new uPlot({ width: Math.max(200, host.current.clientWidth), height: 260,
       legend: { show: false }, cursor: { drag: { x: false, y: false } },
-      axes: [{ stroke: "#aebccc", grid: { stroke: "#293442" } }, { label: "Tokens / 1%", stroke: "#aebccc", grid: { stroke: "#293442" }, size: 75 }],
-      series: [{}, ...active.map((c, index) => ({ label: c.label, stroke: colors[index], paths: () => null, points: { show: true, size: 6 } }))],
-      hooks: { setCursor: [plot => { if (plot.cursor.idx != null) setInspected(plot.cursor.idx); }] },
+      axes: [{ stroke: "#aebccc", grid: { stroke: "#293442" } }, { label: metric === "usd" ? "API-equivalent USD / 1%" : "Tokens / 1%", stroke: "#aebccc", grid: { stroke: "#293442" }, size: 88,
+        values: (_plot, ticks) => ticks.map(value => value !== 0 && (Math.abs(value) < 0.001 || Math.abs(value) >= 1e9) ? value.toExponential(2) : value.toLocaleString(undefined, { maximumSignificantDigits: 5 })),
+      }],
+      // Independent intervals never imply a continuous consumption rate.
+      series: [{}, ...active.map(c => ({ label: c.name, stroke: c.color, paths: () => null, points: { show: true, size: 7 } }))],
+      hooks: { setCursor: [plot => setInspected(plot.cursor.idx ?? null)] },
     }, data, host.current);
-    const resize = new ResizeObserver(() => { if (host.current) plot.setSize({ width: Math.max(240, host.current.clientWidth), height: 260 }); });
+    const resize = new ResizeObserver(() => { if (host.current) plot.setSize({ width: Math.max(200, host.current.clientWidth), height: 260 }); });
     resize.observe(host.current);
     return () => { resize.disconnect(); plot.destroy(); };
-  }, [intervals, active, writes]);
-  const interval = intervals[Math.min(inspected, intervals.length - 1)];
+  }, [intervals, active, writes, metric]);
+  const interval = inspected === null ? null : intervals[Math.min(inspected, intervals.length - 1)];
   return <section className="quota-analysis dashboard-panel" aria-labelledby="quota-analysis-heading">
-    <div className="dashboard-section-heading"><div><span className="eyebrow">SUBSCRIPTION EXPERIMENTS · NO PRICES REQUIRED</span><h2 id="quota-analysis-heading">Tokens per 1% of weekly quota</h2></div></div>
-    <p>Compare all 31 nonempty combinations of five token categories. Each dot uses matching local tokens and an observed weekly increase of at least 1 percentage point.</p>
-    <div className="quota-analysis-controls">
-      <label>Cache-write interpretation<select value={writes} onChange={e => setWrites(e.target.value as WriteInterpretation)}>
-        <option value="additional">Hypothesis: writes are additional to input</option>
-        <option value="included">Hypothesis: writes are inside uncached input</option>
-      </select></label>
-      <label>Compare intervals<select value={scope} onChange={e => setScope(e.target.value)}><option value="range">Selected dashboard range</option><option value="recent">Fully within last 15 minutes</option></select></label>
-    </div>
-    <p className="dashboard-muted">Uncached input = input − cached input{writes === "included" ? " − cache write" : ""}. Visible output = output − reasoning. Selected categories are added once. Both cache-write interpretations are hypotheses, not subscription billing rules.</p>
-    <p role="status">{intervals.length} complete quota intervals available{analysis.totalIntervals > analysis.intervals.length ? ` · latest ${analysis.intervals.length} of ${analysis.totalIntervals} retained for comparison` : ""}. Choose up to six combinations to plot.</p>
-    {!intervals.length ? <p className="chart-empty">Waiting for two trustworthy quota observations with an increase of at least 1%. Partial intervals, resets and conflicting observations are not bridged.</p> : <>
-      <div className="quota-analysis-key">{active.map((c, i) => <span key={c.mask} style={{ color: colors[i] }}>{c.label}</span>)}</div>
-      {active.length ? <div className="quota-analysis-plot" ref={host} aria-hidden="true" /> : <p>Select a combination below to show its chart.</p>}
-      <label className="quota-analysis-inspector">Inspect interval ({Math.min(inspected + 1, intervals.length)} / {intervals.length})<input type="range" min="0" max={intervals.length - 1} value={Math.min(inspected, intervals.length - 1)} onChange={e => setInspected(Number(e.target.value))} /></label>
-      {interval && <div className="quota-analysis-readout" role="status" aria-live="polite"><p>{exactTime(interval.start)} – {exactTime(interval.end)} · {interval.consumedPercentagePoints} percentage points</p><dl>{active.map(c => {
-        const tokens = combinationTokens(interval, c.mask, writes);
-        return <div key={c.mask}><dt>{c.label}</dt><dd>{tokens === null ? "Unavailable — missing counters or invalid subtraction" : `${tokens.toLocaleString()} tokens · ${exactNumber(tokensPerPercent(tokens, interval.consumedPercentagePoints))} / 1%`}</dd></div>;
-      })}</dl></div>}
-    </>}
-    <div className="quota-analysis-table" tabIndex={0} role="region" aria-label="All token combinations"><table>
-      <thead><tr><th scope="col">Plot / combination</th><th scope="col">Tokens / 1%<small>weighted average</small></th><th scope="col">Min – max / 1%</th><th scope="col">Variation<small>CV · 3+ intervals</small></th><th scope="col">Usable intervals</th></tr></thead>
-      <tbody>{rows.map(row => <tr key={row.mask}><th scope="row"><label><input type="checkbox" checked={selected.includes(row.mask)} disabled={!selected.includes(row.mask) && selected.length >= 6} onChange={e => setSelected(current => e.target.checked ? [...current, row.mask] : current.filter(mask => mask !== row.mask))} />{row.label}</label></th><td>{exactNumber(row.ratio)}</td><td>{number(row.min)} – {number(row.max)}</td><td>{row.variation === null ? "—" : `${number(row.variation)}%`}</td><td>{row.count} / {intervals.length}</td></tr>)}</tbody>
-    </table></div>
-    <p className="dashboard-muted">Weighted average = selected tokens ÷ observed percentage points, using only usable intervals for that combination. Variation measures spread between interval ratios; lower variation does not prove how OpenAI counts tokens. Model mix, quota rounding, delayed reports and usage on other devices can affect results. Missing local counters remain unknown. Prices, including codex-auto-review pricing, do not affect this comparison.</p>
+    <div className="dashboard-section-heading"><h2 id="quota-analysis-heading">Weekly quota hypotheses</h2><div className="dashboard-ranges" role="group" aria-label="Hypothesis chart metric">{(["usd", "tokens"] as const).map(value => <button key={value} type="button" aria-pressed={metric === value} onClick={() => setMetric(value)}>{value === "usd" ? "USD / 1%" : "Tokens / 1%"}</button>)}</div></div>
+    <p>Compare how different token categories could correspond to one observed percentage point of your weekly limit.</p>
+    <p className="dashboard-muted">API-equivalent · configured model prices · Cache writes {writes === "included" ? "included in input" : "additional to input"}</p>
+    {intervals.length ? <>
+      <div className="quota-analysis-plot" ref={host} role="group" aria-label={`${metric === "usd" ? "USD" : "Tokens"} per observed 1% comparison chart; use arrow keys for interval details`} tabIndex={0}
+        onKeyDown={e => { if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) { e.preventDefault(); setInspected(current => e.key === "Home" ? 0 : e.key === "End" ? intervals.length - 1 : Math.max(0, Math.min(intervals.length - 1, (current ?? -1) + (e.key === "ArrowRight" ? 1 : -1)))); } }} />
+      <p className="dashboard-muted">Each dot is one comparable interval. Hover or focus the chart and use ← / → for details. Toggle series on the cards.</p>
+      {interval && <div className="hypothesis-tooltip" role="status" aria-live="polite"><p>{exactTime(interval.start)} – {exactTime(interval.end)} · +{interval.consumedPercentagePoints} percentage points</p><div>{active.map(c => {
+        const value = sample(interval, c.mask, writes);
+        return <p key={c.mask}><span style={{ color: c.color }}>{c.name}</span><span>{formatted(value?.tokens == null ? null : perPercent(value.tokens, interval.consumedPercentagePoints))} tokens / 1% · {formatted(value?.estimatedUsd == null ? null : perPercent(value.estimatedUsd, interval.consumedPercentagePoints, 12, 6), true)} USD / 1%</span></p>;
+      })}</div></div>}
+      {!active.length && <p role="status">Enable a series using its card below.</p>}
+      {metric === "usd" && active.length > 0 && !intervals.some(i => active.some(c => sample(i, c.mask, writes)?.estimatedUsd != null)) && <p role="status">USD unavailable: no comparable priced intervals. Tokens can still be compared when counters are complete.</p>}
+    </> : <p className="chart-empty">Waiting for two trustworthy observations with an increase of at least 1%. Resets and ambiguous observations are excluded.</p>}
+    <div className="hypothesis-grid">{rows.map(row => <article className="hypothesis-card" key={row.mask} style={{ borderTopColor: row.color }} aria-label={row.name}>
+      <label className="hypothesis-toggle"><input type="checkbox" checked={selected.includes(row.mask)} onChange={e => setSelected(current => e.target.checked ? [...current, row.mask] : current.filter(mask => mask !== row.mask))} /><span className="hypothesis-dot" style={{ background: row.color }} /><strong>{row.name}</strong><span className="sr-only"> series visibility</span></label>
+      <div className="hypothesis-badges">{row.components.map((name, index) => <span key={name} className={index < 2 ? "permanent" : "optional"}>{name}</span>)}</div>
+      <dl><div><dt>Tokens / 1%</dt><dd>{formatted(row.tokens)}</dd></div><div><dt>Estimated USD / 1%</dt><dd>{formatted(row.usd, true)}</dd></div><div><dt>Estimated USD / 100%</dt><dd>{formatted(row.fullUsd, true)}</dd></div></dl>
+      <p className="dashboard-muted">{row.count} / {intervals.length} usable intervals · weighted average{row.variation !== null && ` · Spread ${row.variation.toLocaleString(undefined, { maximumFractionDigits: 1 })}% CV`}</p>
+      {row.tokens === null ? <p className="hypothesis-unavailable">Unavailable — {row.tokenReason}</p> : row.usd === null && <p className="hypothesis-unavailable">USD unavailable — {row.priceReason} ({row.pricedCount} / {row.count} priced)</p>}
+    </article>)}</div>
+    <p className="dashboard-muted">These are comparisons of local observations, not OpenAI billing rules. Other devices, delayed quota reporting, model mix and percentage rounding can affect the result.</p>
+    <details className="hypothesis-method"><summary>Method and data quality</summary>
+      <label>Cache-write interpretation<select value={writes} onChange={e => setWrites(e.target.value as WriteInterpretation)}><option value="additional">Additional to input</option><option value="included">Included in input</option></select></label>
+      <p>Input badge = uncached input: input − cached input{writes === "included" ? " − cache writes" : ""}. Output badge = visible output: output − reasoning. Optional components are added once. Both cache-write interpretations are hypotheses.</p>
+      <p>For each usage observation, multiply each selected component by that model’s preserved price version, then sum within the interval. Reasoning uses its separate price when configured, otherwise the output price. Rates are USD per million tokens.</p>
+      <p>Weighted tokens / 1% = sum of usable tokens ÷ sum of observed percentage points. USD / 1% = sum of matching estimated USD ÷ those same percentage points; USD / 100% multiplies this ratio by 100. It is an extrapolation, not a subscription price. Any unpriced usage in the usable intervals makes the monetary average unavailable.</p>
+      <p>{intervals.length} of {analysis.totalIntervals} intervals retained (latest 512 maximum). Only trustworthy intervals fully within the selected range with at least one percentage point are used. Resets, ambiguous observations and partial intervals are excluded; newer unmatched usage is excluded. Missing counters and invalid subset subtraction remain unavailable, including when aggregate totals would hide the invalid observation. Spread is the coefficient of variation of interval token ratios with at least three samples.</p>
+    </details>
   </section>;
 }

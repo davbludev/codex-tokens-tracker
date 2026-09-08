@@ -55,7 +55,7 @@
 .usage-breakdowns .dashboard-section-heading p { margin: 3px 0 0; }
 .breakdown-panel h3 { display: flex; justify-content: space-between; align-items: center; font-size: 13px; font-weight: 550; margin: 0 0 17px; }
 .breakdown-panel h3 span { font-size: 9px; color: var(--muted); letter-spacing: 1px; font-weight: 500; }
-.breakdown-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 13px; }
+.breakdown-list { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 13px; }
 .breakdown-label { display: flex; align-items: baseline; gap: 16px; margin-bottom: 5px; font-size: 11px; }
 .breakdown-label > span { min-width: 0; text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }
 .breakdown-label strong { margin-left: auto; white-space: nowrap; font-size: 11px; font-weight: 550; font-variant-numeric: tabular-nums; }
@@ -99,10 +99,6 @@
 .dashboard-boundaries { max-height: 180px; overflow: auto; overflow-wrap: anywhere; padding-left: 20px; font-size: 11px; }
 .dashboard-chart > .dashboard-muted { font-size: 10px; margin: 8px 0; }
 .quota-inspector { border-top: 1px solid var(--border); padding-top: 10px; margin-top: 8px; font-size: 10px; }
-.dashboard-history-details { border-top: 1px solid var(--border); margin-top: 24px; padding-top: 14px; font-size: 11px; }
-.dashboard-history-details h2 { margin-top: 15px; }
-.dashboard-tokens { display: flex; flex-wrap: wrap; gap: 12px 24px; margin: 12px 0; }
-.dashboard-tokens dd { font-variant-numeric: tabular-nums; font-weight: 500; }
 .dashboard-warning { color: #ebca97; background: #292319; border: 1px solid #655036; border-radius: 7px; padding: 9px 12px; font-size: 12px; }
 .dashboard-disclaimer { color: #77899f; font-size: 10px; margin: 15px 0 0; }
 .dashboard-loading { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }

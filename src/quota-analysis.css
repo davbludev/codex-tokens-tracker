@@ -1,21 +1,29 @@
 .quota-analysis { margin-top: 20px; min-width: 0; }
-.quota-analysis > p { font-size: 12px; margin: 10px 0; }
-.quota-analysis-controls { display: flex; flex-wrap: wrap; gap: 12px 20px; }
-.quota-analysis-controls label { display: grid; gap: 5px; font-size: 12px; flex: 1 1 260px; min-width: 0; }
-.quota-analysis-controls select { width: 100%; min-width: 0; }
-.quota-analysis-key { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 11px; margin: 12px 0; }
-.quota-analysis-plot { width: 100%; overflow: hidden; }
-.quota-analysis-inspector { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; font-size: 12px; }
-.quota-analysis-inspector input { flex: 1; min-width: 120px; padding: 0; }
-.quota-analysis-readout { font-size: 11px; margin: 10px 0; }
-.quota-analysis-readout dl { display: flex; flex-wrap: wrap; gap: 8px 24px; }
-.quota-analysis-readout dd { font-variant-numeric: tabular-nums; }
-.quota-analysis-table { max-height: 410px; overflow: auto; border: 1px solid var(--border); margin-top: 12px; }
-.quota-analysis-table table { border-collapse: collapse; width: 100%; font-size: 11px; }
-.quota-analysis-table th, .quota-analysis-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
-.quota-analysis-table thead { position: sticky; top: 0; background: var(--surface); z-index: 1; }
-.quota-analysis-table th small { display: block; font-weight: normal; color: var(--muted); }
-.quota-analysis-table tbody th { font-weight: normal; min-width: 230px; }
-.quota-analysis-table td { white-space: nowrap; font-variant-numeric: tabular-nums; }
-.quota-analysis-table label { display: flex; gap: 8px; align-items: center; cursor: pointer; }
-.quota-analysis-table input { width: 16px; height: 16px; flex: 0 0 auto; margin: 0; }
+.quota-analysis > p, .hypothesis-method { font-size: 13px; margin: 10px 0; line-height: 1.5; }
+.quota-analysis .dashboard-section-heading { flex-wrap: wrap; gap: 12px; }
+.quota-analysis-plot { width: 100%; min-width: 0; overflow: hidden; }
+.hypothesis-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 14px 0; }
+.hypothesis-card { min-width: 0; padding: 12px; border: 1px solid var(--border); border-top: 3px solid; border-radius: 8px; background: var(--surface); overflow-wrap: anywhere; }
+.hypothesis-toggle { display: flex; align-items: center; gap: 7px; min-height: 32px; font-size: 13px; cursor: pointer; }
+.hypothesis-toggle input { width: 17px; height: 17px; margin: 0; flex-shrink: 0; }
+.hypothesis-toggle .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.hypothesis-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.hypothesis-badges { display: flex; flex-wrap: wrap; gap: 4px; margin: 7px 0 10px; }
+.hypothesis-badges span { font-size: 12px; padding: 2px 6px; border-radius: 4px; border: 1px solid var(--border); }
+.hypothesis-badges .permanent { color: var(--muted); }
+.hypothesis-badges .optional { background: #304257; color: #e1edff; }
+.hypothesis-card dl { margin: 0; display: grid; gap: 7px; }
+.hypothesis-card dl > div { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 2px 8px; font-size: 12px; }
+.hypothesis-card dd { margin: 0; font-size: 14px; font-variant-numeric: tabular-nums; }
+.hypothesis-card p { font-size: 12px; line-height: 1.5; margin: 9px 0 0; }
+.hypothesis-unavailable { color: #edbe74; }
+.hypothesis-tooltip { padding: 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; overflow-wrap: anywhere; }
+.hypothesis-tooltip > p { margin: 0 0 7px; }
+.hypothesis-tooltip > div { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 6px 16px; }
+.hypothesis-tooltip > div p { display: grid; gap: 3px; margin: 0; }
+.hypothesis-method summary { cursor: pointer; padding: 8px 0; }
+.hypothesis-method label { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 8px; }
+.hypothesis-method select { max-width: 100%; }
+.quota-analysis :focus-visible { outline: 2px solid #80b7ff; outline-offset: 3px; }
+@media (max-width: 1050px) { .hypothesis-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+@media (max-width: 560px) { .hypothesis-grid, .hypothesis-tooltip > div { grid-template-columns: minmax(0,1fr); } }

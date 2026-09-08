@@ -1,4 +1,5 @@
-//! Disjoint observed quota intervals, independent of any configured prices.
+//! Disjoint quota intervals with per-observation, version-aware hypothesis prices.
+mod hypotheses;
 use crate::{
     aggregates::{Category, Tokens},
     dashboard::{QuotaAnalysis, QuotaInterval},
@@ -19,6 +20,7 @@ struct Totals {
     sums: [u128; 6],
     missing: [bool; 6],
     observed: bool,
+    hypotheses: hypotheses::Hypotheses,
 }
 impl Totals {
     fn add(&mut self, tokens: Tokens) -> Result<(), ReadError> {
@@ -66,7 +68,15 @@ pub(super) fn read(
 ) -> Result<QuotaAnalysis, ReadError> {
     // Merge one grouped usage stream with canonical quota observations. Never
     // interpolate quota or run a usage-prefix query for every quota sample.
-    let sql = format!("SELECT o.time_seconds,o.time_nanos,COUNT(*),{} FROM observations o WHERE o.accepted=1 AND (o.time_seconds,o.time_nanos)>(?1,?2) AND (o.time_seconds,o.time_nanos)<=(?3,?4) GROUP BY o.time_seconds,o.time_nanos ORDER BY o.time_seconds,o.time_nanos", token_fields());
+    // Immutable valuation version wins. Otherwise apply exactly the existing
+    // effective-time / explicit first-price backfill rules, never latest price.
+    let sql = format!("SELECT o.time_seconds,o.time_nanos,COUNT(*),{},o.normalized,p.configuration FROM observations o
+        LEFT JOIN observation_valuations v ON v.observation_id=o.id
+        LEFT JOIN model_price_versions p ON p.id=COALESCE(v.version_id,
+          (SELECT id FROM model_price_versions WHERE model=o.model AND (effective_seconds,effective_nanos)<=(o.time_seconds,o.time_nanos) ORDER BY effective_seconds DESC,effective_nanos DESC LIMIT 1),
+          (SELECT id FROM model_price_versions WHERE model=o.model AND backfill_before=1 ORDER BY effective_seconds,effective_nanos LIMIT 1))
+        WHERE o.accepted=1 AND (o.time_seconds,o.time_nanos)>(?1,?2) AND (o.time_seconds,o.time_nanos)<=(?3,?4)
+        GROUP BY o.id ORDER BY o.time_seconds,o.time_nanos,o.id", token_fields());
     let mut statement = connection.prepare(&sql).map_err(|_| ReadError::Storage)?;
     let mut rows = statement
         .query(params![start.seconds, start.nanos, now.seconds, now.nanos])
@@ -84,10 +94,14 @@ pub(super) fn read(
             && !timeline.ambiguous
             && timeline.latest.as_ref().is_some_and(|s| s.time == time);
         let continues = valid && segment == current_segment && anchor.is_some();
-        while next.as_ref().is_some_and(|(observed, _)| *observed <= time) {
-            let (_, tokens) = next.take().unwrap();
+        while next
+            .as_ref()
+            .is_some_and(|(observed, _, _, _)| *observed <= time)
+        {
+            let (_, tokens, usage, rates) = next.take().unwrap();
             if continues {
                 totals.add(tokens)?;
+                totals.hypotheses.add(&usage, rates.as_ref());
             }
             next = next_tokens(&mut rows)?;
         }
@@ -106,6 +120,7 @@ pub(super) fn read(
                 end: last.time,
                 consumed_percentage_points: decimal(&consumed),
                 tokens: totals.finish(),
+                hypotheses: totals.hypotheses.finish(),
             });
             total_intervals += 1;
             if intervals.len() > MAX_INTERVALS {
@@ -122,10 +137,28 @@ pub(super) fn read(
     })
 }
 
-fn next_tokens(rows: &mut Rows<'_>) -> Result<Option<(Time, Tokens)>, ReadError> {
+type UsageRow = (
+    Time,
+    Tokens,
+    crate::adapter::Tokens,
+    Option<crate::pricing::Rates>,
+);
+fn next_tokens(rows: &mut Rows<'_>) -> Result<Option<UsageRow>, ReadError> {
     let Some(row) = rows.next().map_err(|_| ReadError::Storage)? else {
         return Ok(None);
     };
+    let encoded: String = row.get(15).map_err(|_| ReadError::Storage)?;
+    let usage: crate::adapter::Usage =
+        serde_json::from_str(&encoded).map_err(|_| ReadError::Storage)?;
+    let configuration: Option<String> = row.get(16).map_err(|_| ReadError::Storage)?;
+    let rates = configuration
+        .map(|encoded| {
+            serde_json::from_str::<crate::pricing::PriceInput>(&encoded)
+                .map_err(|_| ReadError::Storage)?
+                .validate()
+                .map_err(|_| ReadError::Storage)
+        })
+        .transpose()?;
     let read = || -> rusqlite::Result<_> {
         Ok((
             Time {
@@ -133,6 +166,8 @@ fn next_tokens(rows: &mut Rows<'_>) -> Result<Option<(Time, Tokens)>, ReadError>
                 nanos: row.get(1)?,
             },
             row_tokens(row, 3, row.get(2)?)?,
+            usage.usage,
+            rates,
         ))
     };
     read().map(Some).map_err(|_| ReadError::Storage)

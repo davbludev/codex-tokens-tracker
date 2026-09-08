@@ -69,6 +69,20 @@ pub struct QuotaInterval {
     pub end: Time,
     pub consumed_percentage_points: String,
     pub tokens: aggregates::Tokens,
+    pub hypotheses: Vec<QuotaHypothesis>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaHypothesis {
+    /// Optional bits: cached input=1, cache writes=2, reasoning=4.
+    pub mask: u8,
+    pub writes_included: bool,
+    pub tokens: Option<String>,
+    /// Exact integer trillionths of USD; absent if any usage is unpriced.
+    pub estimated_usd: Option<String>,
+    pub token_reason: Option<&'static str>,
+    pub price_reason: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize)]

@@ -1,37 +1,14 @@
 import type { QuotaInterval } from "./dashboard-types";
 
 export type WriteInterpretation = "included" | "additional";
-export const components = ["Uncached input", "Cached input", "Cache write", "Visible output", "Reasoning"];
-export const combinations = Array.from({ length: 31 }, (_, i) => ({
-  mask: i + 1, label: components.filter((_, bit) => (i + 1) & (1 << bit)).join(" + "),
-}));
+const optional = ["Cached input", "Cache writes", "Reasoning"];
+const names = ["Baseline", "+ Cache read", "+ Cache write", "+ Cache read + write", "+ Reasoning", "+ Cache read + reasoning", "+ Cache write + reasoning", "+ All three"];
+const colors = ["#80b7ff", "#65d8ad", "#edbe74", "#c1a0ff", "#ef94ac", "#86dce5", "#e9e38a", "#f6a476"];
+export const combinations = [0, 1, 2, 4, 3, 5, 6, 7].map(mask => ({ mask, name: names[mask], color: colors[mask], components: ["Input", "Output", ...optional.filter((_, bit) => mask & (1 << bit))] }));
 
-/** Cancel overlapping subsets before requiring counters; output as reported
- * remains usable even when its reasoning breakdown is unavailable. */
-export function combinationTokens(interval: QuotaInterval, mask: number, writes: WriteInterpretation): bigint | null {
-  if (writes === "included" && (mask & 1)) {
-    const { inputTokens: input, cachedInputTokens: cached, cacheWriteTokens: write } = interval.tokens;
-    if ([input, cached, write].every(c => c.complete && c.knownTokens !== null) && BigInt(input.knownTokens!) < BigInt(cached.knownTokens!) + BigInt(write.knownTokens!)) return null;
-  }
-  const selected = (bit: number) => Number(Boolean(mask & (1 << bit)));
-  const coefficients = {
-    inputTokens: selected(0),
-    cachedInputTokens: selected(1) - selected(0),
-    cacheWriteTokens: selected(2) - (writes === "included" ? selected(0) : 0),
-    outputTokens: selected(3),
-    reasoningTokens: selected(4) - selected(3),
-  };
-  let total = 0n;
-  for (const [name, coefficient] of Object.entries(coefficients)) {
-    if (!coefficient) continue;
-    const category = interval.tokens[name as keyof typeof coefficients];
-    if (!category.complete || category.knownTokens === null) return null;
-    total += BigInt(category.knownTokens) * BigInt(coefficient);
-  }
-  return total < 0n ? null : total;
+export function sample(interval: QuotaInterval, mask: number, writes: WriteInterpretation) {
+  return interval.hypotheses.find(h => h.mask === mask && h.writesIncluded === (writes === "included"));
 }
-
-// Native percentages are bounded decimal strings, potentially exponential.
 function decimalParts(value: string): { integer: bigint; scale: number } {
   const [mantissa, exponent = "0"] = value.toLowerCase().split("e");
   const [whole, fraction = ""] = mantissa.split(".");
@@ -42,26 +19,35 @@ function decimalParts(value: string): { integer: bigint; scale: number } {
 function sumPercentages(values: string[]): string {
   const parts = values.map(decimalParts);
   const scale = Math.max(0, ...parts.map(p => p.scale));
-  const sum = parts.reduce((total, p) => total + p.integer * 10n ** BigInt(scale - p.scale), 0n);
-  return `${sum}e-${scale}`;
+  return `${parts.reduce((total, p) => total + p.integer * 10n ** BigInt(scale - p.scale), 0n)}e-${scale}`;
 }
-/** Exact integer arithmetic up to the final display rounding (two decimals). */
-export function tokensPerPercent(tokens: bigint, percent: string): string {
+/** Exact arithmetic until rounding to the requested display precision. */
+export function perPercent(units: string, percent: string, unitScale = 0, digits = 2): string {
   const { integer, scale } = decimalParts(percent);
-  const numerator = tokens * 10n ** BigInt(scale) * 100n;
-  const rounded = (numerator * 2n + integer) / (integer * 2n);
-  return `${rounded / 100n}.${String(rounded % 100n).padStart(2, "0")}`;
+  const numerator = BigInt(units) * 10n ** BigInt(scale + digits);
+  const denominator = integer * 10n ** BigInt(unitScale);
+  const rounded = (numerator * 2n + denominator) / (denominator * 2n);
+  const factor = 10n ** BigInt(digits);
+  return `${rounded / factor}.${String(rounded % factor).padStart(digits, "0")}`;
 }
 export function combinationStats(intervals: QuotaInterval[], mask: number, writes: WriteInterpretation) {
-  const samples = intervals.flatMap(interval => {
-    const tokens = combinationTokens(interval, mask, writes);
-    return tokens === null ? [] : [{ tokens, percent: interval.consumedPercentagePoints, ratio: tokensPerPercent(tokens, interval.consumedPercentagePoints) }];
-  });
-  if (!samples.length) return { count: 0, ratio: null, min: null, max: null, variation: null };
-  const values = samples.map(sample => Number(sample.ratio));
-  const mean = values.reduce((sum, v) => sum + v, 0) / values.length;
-  const variation = samples.length >= 3 && mean > 0 ? Math.sqrt(values.reduce((sum, v) => sum + (v - mean) ** 2, 0) / values.length) / mean * 100 : null;
-  return { count: samples.length,
-    ratio: tokensPerPercent(samples.reduce((sum, sample) => sum + sample.tokens, 0n), sumPercentages(samples.map(sample => sample.percent))),
-    min: Math.min(...values), max: Math.max(...values), variation };
+  const samples = intervals.map(interval => ({ interval, value: sample(interval, mask, writes) }));
+  const usable = samples.filter(s => s.value?.tokens != null);
+  const priced = usable.filter(s => s.value?.estimatedUsd != null);
+  const percent = sumPercentages(usable.map(s => s.interval.consumedPercentagePoints));
+  const tokens = usable.reduce((sum, s) => sum + BigInt(s.value!.tokens!), 0n).toString();
+  // Never present a priced subset as the monetary result for the whole scope.
+  const complete = usable.length > 0 && priced.length === usable.length;
+  const amount = priced.reduce((sum, s) => sum + BigInt(s.value!.estimatedUsd!), 0n);
+  const ratios = usable.map(s => Number(perPercent(s.value!.tokens!, s.interval.consumedPercentagePoints)));
+  const mean = ratios.reduce((sum, value) => sum + value, 0) / ratios.length;
+  return {
+    count: usable.length, pricedCount: priced.length,
+    tokens: usable.length ? perPercent(tokens, percent) : null,
+    usd: complete ? perPercent(String(amount), percent, 12, 6) : null,
+    fullUsd: complete ? perPercent(String(amount * 100n), percent, 12, 6) : null,
+    variation: ratios.length >= 3 && mean > 0 ? Math.sqrt(ratios.reduce((sum, value) => sum + (value - mean) ** 2, 0) / ratios.length) / mean * 100 : null,
+    tokenReason: samples.find(s => s.value?.tokenReason)?.value?.tokenReason ?? "No comparable local intervals",
+    priceReason: samples.find(s => s.value?.priceReason)?.value?.priceReason ?? "No comparable priced intervals",
+  };
 }

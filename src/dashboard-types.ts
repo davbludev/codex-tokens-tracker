@@ -114,7 +114,8 @@ export type DashboardResponse = {
   quotaAnalysis: QuotaAnalysis;
 };
 
-export type QuotaInterval = { start: ObservationTime; end: ObservationTime; consumedPercentagePoints: string; tokens: GlobalSummary["tokens"] };
+export type QuotaHypothesis = { mask: number; writesIncluded: boolean; tokens: string | null; estimatedUsd: string | null; tokenReason: string | null; priceReason: string | null };
+export type QuotaInterval = { start: ObservationTime; end: ObservationTime; consumedPercentagePoints: string; tokens: GlobalSummary["tokens"]; hypotheses: QuotaHypothesis[] };
 export type QuotaAnalysis = { intervals: QuotaInterval[]; totalIntervals: number };
 
 export type LocalUsageSummary = Pick<GlobalSummary, "tokens" | "estimatedCost" | "observedSessions">;

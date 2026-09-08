@@ -71,6 +71,119 @@ fn price(store: &mut Store) {
         store.process_pricing_work().unwrap();
     }
 }
+
+#[test]
+fn quota_hypotheses_preserve_versions_model_mix_backfill_and_unknown_prices() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("hypotheses.sqlite");
+    let mut store = Store::open(&path).unwrap();
+    limit(&mut store, "2026-01-01T00:00:00Z", "10");
+    usage(&mut store, "first", "2026-01-01T00:01:00Z", "priced");
+    local_usage(
+        &mut store,
+        "second",
+        Some("2026-01-01T00:02:00Z"),
+        Some("other"),
+        2_000_000,
+        None,
+        None,
+    );
+    limit(&mut store, "2026-01-01T00:03:00Z", "12");
+    assert!(read(&mut store, "2026-01-01T00:03:00Z", Range::All)
+        .quota_analysis
+        .intervals[0]
+        .hypotheses[1]
+        .estimated_usd
+        .is_none());
+    price(&mut store);
+    assert!(
+        read(&mut store, "2026-01-01T00:03:00Z", Range::All)
+            .quota_analysis
+            .intervals[0]
+            .hypotheses[1]
+            .estimated_usd
+            .is_none(),
+        "one priced model cannot make the mixed interval complete"
+    );
+    let configuration = PriceInput {
+        input: "3".into(),
+        cached_input: "3".into(),
+        cache_write: "3".into(),
+        output: "3".into(),
+        reasoning: None,
+        reasoning_policy: ReasoningPolicy::Included,
+        cache_write_policy: CacheWritePolicy::Additional,
+    };
+    store
+        .save_model_price_at(
+            "other",
+            configuration.clone(),
+            true,
+            (time("2026-01-01T00:03:30Z").seconds, 0),
+        )
+        .unwrap();
+    while store.pricing_work_pending().unwrap() {
+        store.process_pricing_work().unwrap();
+    }
+    // 1M tokens at $1 + 2M at $3 = $7, not $3 (first rate) or $6 (mean rate).
+    let before = read(&mut store, "2026-01-01T00:03:30Z", Range::All);
+    assert_eq!(
+        before.quota_analysis.intervals[0].hypotheses[1]
+            .estimated_usd
+            .as_deref(),
+        Some("7000000000000")
+    );
+    usage(
+        &mut store,
+        "old-version-in-second",
+        "2026-01-01T00:03:45Z",
+        "priced",
+    );
+    store
+        .save_model_price_at(
+            "priced",
+            configuration,
+            false,
+            (time("2026-01-01T00:04:00Z").seconds, 0),
+        )
+        .unwrap();
+    usage(&mut store, "third", "2026-01-01T00:05:00Z", "priced");
+    limit(&mut store, "2026-01-01T00:06:00Z", "14");
+    while store.pricing_work_pending().unwrap() {
+        store.process_pricing_work().unwrap();
+    }
+    drop(store);
+    let mut store = Store::open(&path).unwrap();
+    let after = read(&mut store, "2026-01-01T00:06:00Z", Range::All);
+    assert_eq!(
+        after.quota_analysis.intervals[0].hypotheses[1]
+            .estimated_usd
+            .as_deref(),
+        Some("7000000000000")
+    );
+    assert_eq!(
+        after.quota_analysis.intervals[1].hypotheses[1]
+            .estimated_usd
+            .as_deref(),
+        Some("4000000000000")
+    );
+    // A later reset and a tied ambiguous observation never bridge intervals.
+    limit(&mut store, "2026-01-01T00:07:00Z", "1");
+    usage(&mut store, "fourth", "2026-01-01T00:08:00Z", "unknown");
+    limit(&mut store, "2026-01-01T00:09:00Z", "3");
+    limit(&mut store, "2026-01-01T00:10:00Z", "4");
+    limit(&mut store, "2026-01-01T00:10:00Z", "5");
+    limit(&mut store, "2026-01-01T00:11:00Z", "6");
+    let after = read(&mut store, "2026-01-01T00:11:00Z", Range::All);
+    let intervals = &after.quota_analysis.intervals;
+    assert_eq!(intervals.len(), 3);
+    assert_eq!(intervals[2].start, time("2026-01-01T00:07:00Z"));
+    assert_eq!(intervals[2].end, time("2026-01-01T00:09:00Z"));
+    assert!(intervals[2]
+        .hypotheses
+        .iter()
+        .all(|row| row.tokens.is_some() && row.estimated_usd.is_none()));
+}
 fn read(store: &mut Store, now: &str, range: Range) -> dto::Response {
     store
         .dashboard_at(

@@ -20,7 +20,7 @@ try {
     const response = await route.fetch();
     const source = await response.text();
     assert.ok(source.includes("export { uPlot as default };"));
-    await route.fulfill({ response, body: source.replace("export { uPlot as default };", "const ObservedPlot = new Proxy(uPlot, { construct(target, args) { const plot = Reflect.construct(target, args); if (plot.series.some(series => series.scale === 'weekly')) window.dashboardPlot = plot; return plot; } }); export { ObservedPlot as default };") });
+    await route.fulfill({ response, body: source.replace("export { uPlot as default };", "const ObservedPlot = new Proxy(uPlot, { construct(target, args) { const plot = Reflect.construct(target, args); if (plot.series.some(series => series.scale === 'weekly')) window.dashboardPlot = plot; if (args[2]?.classList.contains('quota-analysis-plot')) window.hypothesisPlot = plot; return plot; } }); export { ObservedPlot as default };") });
   });
   if (!process.env.DASHBOARD_APP_MOUNT) await page.route("http://127.0.0.1:1422/", route => route.fulfill({ contentType: "text/html", body: '<html><div id="root"></div><script type="module">import React from "/node_modules/.vite/deps/react.js"; import ReactDOM from "/node_modules/.vite/deps/react-dom_client.js"; import {Dashboard} from "/src/Dashboard.tsx"; import "/src/style.css"; ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(Dashboard));</script></html>' }));
   await page.addInitScript(() => {
@@ -61,6 +61,7 @@ try {
         ], boundaries: [{ binIndex: 9, firstTime: time(1800001000), lastTime: time(1800001000), count: 1, kinds: ["reset"], overloaded: false }],
       },
     };
+    response.quotaAnalysis = { totalIntervals: 3, intervals: [1, 2, 3].map(n => ({ start: time(1800000000 + n * 100), end: time(1800000050 + n * 100), consumedPercentagePoints: String(n), tokens: tokens(160), hypotheses: Array.from({ length: 16 }, (_, index) => ({ mask: index % 8, writesIncluded: index >= 8, tokens: String((115 + (index % 8 & 1 ? 20 : 0) + (index % 8 & 2 ? 10 : 0) + (index % 8 & 4 ? 15 : 0) - (index >= 8 ? 10 : 0)) * n), estimatedUsd: String(BigInt((300 + (index % 8 & 1 ? 10 : 0) + (index % 8 & 2 ? 30 : 0) + (index % 8 & 4 ? 90 : 0) - (index >= 8 ? 20 : 0)) * n) * 1000000n), tokenReason: null, priceReason: null })) })) };
     const state = window.dashboardTest = { calls: [], callbacks: {}, listeners: new Set(), listener: "broadcast", active: 0, maxActive: 0, hold: false, releases: [], fail: false, response };
     state.callbacks.broadcast = event => { for (const handler of state.listeners) state.callbacks[handler](event); };
     window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: (_event, id) => state.listeners.delete(id) };
@@ -88,7 +89,64 @@ try {
   assert.equal(await page.locator(".dashboard-summary .dashboard-metric").count(), 4);
   await page.waitForFunction(() => document.querySelectorAll(".usage-chart .uplot").length === 2);
   assert.equal(await page.locator(".weekly-details").getAttribute("open"), null, "coverage details start collapsed");
-  assert.equal(await page.locator(".dashboard-history-details").getAttribute("open"), null);
+  assert.equal(await page.locator(".dashboard-history-details").count(), 0);
+  assert.equal(await page.locator(".hypothesis-method").getAttribute("open"), null);
+  const cards = page.locator(".hypothesis-card");
+  assert.equal(await cards.count(), 8);
+  assert.deepEqual(await cards.locator(".hypothesis-badges").evaluateAll(elements => elements.map(el => el.textContent)), ["InputOutput", "InputOutputCached input", "InputOutputCache writes", "InputOutputReasoning", "InputOutputCached inputCache writes", "InputOutputCached inputReasoning", "InputOutputCache writesReasoning", "InputOutputCached inputCache writesReasoning"]);
+  await page.waitForFunction(() => window.hypothesisPlot?.series.length === 9);
+  const weighted = await page.evaluate(async () => {
+    const { combinationStats, perPercent } = await import("/src/quota-combinations.ts");
+    const base = structuredClone(window.dashboardTest.response.quotaAnalysis.intervals.slice(0, 2));
+    base[0].consumedPercentagePoints = "1"; base[1].consumedPercentagePoints = "3";
+    for (const [index, tokens] of ["100", "900"].entries()) {
+      base[index].hypotheses[0].tokens = tokens;
+      base[index].hypotheses[0].estimatedUsd = String(BigInt(tokens) * 1000000000000n);
+    }
+    const complete = combinationStats(base, 0, "additional");
+    base[1].hypotheses[0].estimatedUsd = null;
+    base[1].hypotheses[0].priceReason = "Unpriced usage";
+    const partial = combinationStats(base, 0, "additional");
+    return { complete, partial, exact: perPercent("9007199254740993", "1") };
+  });
+  assert.equal(weighted.complete.tokens, "250.00", "weighted by observed percentage points, not mean of ratios");
+  assert.equal(weighted.complete.usd, "250.000000");
+  assert.equal(weighted.complete.fullUsd, "25000.000000");
+  assert.equal(weighted.partial.tokens, "250.00");
+  assert.equal(weighted.partial.usd, null, "a priced subset must not masquerade as a complete average");
+  assert.equal(weighted.partial.fullUsd, null);
+  assert.equal(weighted.exact, "9007199254740993.00");
+  const axisLabels = await page.evaluate(() => window.hypothesisPlot.axes[1].values(window.hypothesisPlot, [0.0003, 0.0004]));
+  assert.deepEqual(axisLabels, ["3.00e-4", "4.00e-4"], "small monetary axis labels remain distinguishable");
+  assert.equal(await page.locator(".quota-analysis .uplot").count(), 1);
+  assert.match(await cards.first().innerText(), /115.00/);
+  assert.match(await cards.first().innerText(), /\$0.000300/);
+  assert.match(await cards.first().innerText(), /\$0.030000/);
+  const seriesBefore = await page.evaluate(() => window.hypothesisPlot.series.slice(1).map(s => ({ label: s.label, color: s.stroke(), noPath: s.paths() === null })));
+  assert.ok(seriesBefore.every(s => s.noPath), "independent intervals are points, never connected across gaps");
+  const hypothesisMetric = page.getByRole("group", { name: "Hypothesis chart metric" });
+  await hypothesisMetric.getByRole("button", { name: "Tokens / 1%", exact: true }).focus();
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => window.hypothesisPlot.data[1][0] === 115);
+  const checkbox = cards.first().getByRole("checkbox");
+  await checkbox.focus(); await page.keyboard.press("Space");
+  await page.waitForFunction(() => window.hypothesisPlot.series.length === 8);
+  assert.deepEqual(await page.evaluate(() => window.hypothesisPlot.series.slice(1).map(s => ({ label: s.label, color: s.stroke(), noPath: s.paths() === null }))), seriesBefore.slice(1), "series colors remain stable when another series is hidden");
+  await page.keyboard.press("Space");
+  await page.waitForFunction(() => window.hypothesisPlot.series.length === 9);
+  await hypothesisMetric.getByRole("button", { name: "USD / 1%", exact: true }).click();
+  await page.waitForFunction(() => window.hypothesisPlot.data[1][0] === 0.0003);
+  await page.locator(".quota-analysis-plot").focus(); await page.keyboard.press("Home");
+  assert.match(await page.locator(".hypothesis-tooltip").innerText(), /\+1 percentage points/);
+  assert.match(await page.locator(".hypothesis-tooltip").innerText(), /115.00 tokens \/ 1%/);
+  await page.keyboard.press("ArrowRight");
+  assert.match(await page.locator(".hypothesis-tooltip").innerText(), /\+2 percentage points/);
+  await page.locator(".hypothesis-method > summary").click();
+  await page.getByLabel("Cache-write interpretation").selectOption("included");
+  assert.match(await cards.first().innerText(), /105.00/);
+  assert.match(await cards.first().innerText(), /\$0.000280/);
+  await page.getByLabel("Cache-write interpretation").selectOption("additional");
+  await page.locator(".hypothesis-method > summary").click();
   assert.match(await page.locator(".dashboard-coverage").innerText(), /2 observations have no timestamp/);
   for (const [title, unknown, remainder] of [["By model", "Unknown model", "Other models"], ["By project", "Unattributed project", "Other projects"]]) {
     const panel = page.getByRole("region", { name: title, exact: true });
@@ -117,18 +175,33 @@ try {
   }
   await page.locator(".dashboard-toolbar").scrollIntoViewIfNeeded();
   if (process.env.DASHBOARD_SCREENSHOT) await page.screenshot({ path: process.env.DASHBOARD_SCREENSHOT, fullPage: true });
+  if (process.env.DASHBOARD_SCREENSHOT) await page.locator(".quota-analysis").screenshot({ path: process.env.DASHBOARD_SCREENSHOT.replace(/\.png$/, "-comparison.png") });
   const wide = await page.locator(".usage-chart .uplot").evaluateAll(elements => elements.map(el => el.clientWidth));
   await page.setViewportSize({ width: 390, height: 850 });
   await page.waitForFunction(widths => Array.from(document.querySelectorAll(".usage-chart .uplot")).every((el, index) => el.clientWidth < widths[index]), wide);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "dashboard fits narrow viewport");
   if (process.env.DASHBOARD_SCREENSHOT) await page.screenshot({ path: process.env.DASHBOARD_SCREENSHOT.replace(/\.png$/, "-narrow.png"), fullPage: true });
+  await page.evaluate(() => {
+    const s = window.dashboardTest;
+    for (const interval of s.response.quotaAnalysis.intervals) {
+      interval.hypotheses[0].tokens = "900719925474099312345";
+      interval.hypotheses[0].estimatedUsd = null;
+      interval.hypotheses[0].priceReason = "Unpriced usage: no applicable model price";
+      interval.hypotheses[1].tokens = null;
+      interval.hypotheses[1].estimatedUsd = null;
+      interval.hypotheses[1].tokenReason = "Invalid input subset subtraction";
+    }
+    s.response.breakdowns.models[0].label = "long-model-name-with-a-very-long-version-and-localized-identifier-123456789";
+    s.callbacks[s.listener]({ payload: {} });
+  });
+  await page.clock.runFor(200);
+  await cards.first().getByText(/USD unavailable — Unpriced usage/).waitFor();
+  await cards.nth(1).getByText(/Unavailable — Invalid input subset subtraction/).waitFor();
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "large exact numbers, unavailable reasons and long model names fit 390px: " + JSON.stringify(await page.locator("body *").evaluateAll(elements => elements.filter(el => el.getBoundingClientRect().right > innerWidth + 1).map(el => ({ tag: el.tagName, class: el.className, width: el.getBoundingClientRect().width })).slice(0, 12))));
   await page.setViewportSize({ width: 1200, height: 800 });
   await page.locator(".weekly-details > summary").click();
-  await page.locator(".dashboard-history-details > summary").click();
   await page.getByText("42.000000001% / 57.999999999%", { exact: true }).waitFor();
   await page.getByText("Since observation began · partial cycle", { exact: true }).waitFor();
-  await page.getByText("Coverage warning:", { exact: false }).waitFor();
-  assert.match(await page.locator(".dashboard-tokens").innerText(), /9,007,199,254,740,993/);
   assert.match(await page.locator(".dashboard-unmatched").innerText(), /\$0.5/);
   const scales = await page.evaluate(() => {
     const plot = window.dashboardPlot;
@@ -273,5 +346,5 @@ try {
   assert.equal(await page.locator(".usage-chart").getByText("No recorded activity", { exact: true }).count(), 2);
   assert.equal(await page.getByText("No recorded usage in this range.", { exact: true }).count(), 2);
   assert.deepEqual(failures, []);
-  console.log("Dashboard UI: two responsive local charts, exact keyboard/hover readouts, bounded breakdowns, serialized live/range/metric refresh, quota-independent tokens, unpriced/partial/empty/retry states passed.");
+  console.log("Dashboard UI: eight hypotheses, shared chart, stable colors, weighted exact metrics, unavailable states, keyboard controls, 390px overflow and preserved upper dashboard checks passed.");
 } finally { await browser?.close(); server.kill(); }

@@ -110,6 +110,31 @@ impl PriceInput {
 }
 
 impl Rates {
+    /// Research component prices: reasoning uses output's price unless a separate
+    /// reasoning price was configured. This does not change normal valuation policy.
+    pub(crate) fn hypothesis_value(&self, components: [i64; 5]) -> Result<i128, Error> {
+        let reasoning = if self.reasoning_policy == ReasoningPolicy::Separate {
+            self.reasoning
+        } else {
+            self.output
+        };
+        components
+            .into_iter()
+            .zip([
+                self.input,
+                self.cached_input,
+                self.cache_write,
+                self.output,
+                reasoning,
+            ])
+            .try_fold(0i128, |sum, (tokens, rate)| {
+                i128::from(tokens)
+                    .checked_mul(i128::from(rate))
+                    .and_then(|amount| sum.checked_add(amount))
+                    .ok_or(Error::Overflow)
+            })
+    }
+
     pub fn value(&self, tokens: &Tokens) -> Result<i128, Error> {
         let values = tokens.values().ok_or(Error::MissingCategories)?;
         let [input, cached, writes, output, reasoning, _total] = values;

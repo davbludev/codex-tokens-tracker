@@ -53,17 +53,7 @@ export function Dashboard({ onOpenPricing }: { onOpenPricing?: () => void }) {
         <h3 className="quota-chart-title">Weekly usage and estimated cost</h3>
         <DashboardChart chart={data.chart} />
       </section>
-      {data.quotaAnalysis && <QuotaAnalysis analysis={data.quotaAnalysis} now={data.evaluatedAt} />}
-      <details className="dashboard-history-details"><summary>All-history totals and data coverage</summary>
-        <h2>Locally observed global tokens · all history</h2>
-        <dl className="dashboard-tokens">{([["totalTokens", "Total"], ["inputTokens", "Input"], ["cachedInputTokens", "Cached input"], ["cacheWriteTokens", "Cache writes"], ["reasoningTokens", "Reasoning"], ["outputTokens", "Output"]] as const).map(([key, label]) => {
-          const category = data.global.tokens[key];
-          return <div key={key}><dt>{label}</dt><dd>{exactTokens(category.knownTokens)}{!category.complete && " · incomplete"}</dd></div>;
-        })}</dl>
-        <p className="dashboard-muted">Token categories overlap; do not add them together. This all-history scope is independent of the selected chart range. Global estimated USD: {costText(data.global.estimatedCost)}.</p>
-        {hasCoverage && <p className="dashboard-warning" role="status">Coverage warning: some local usage has incomplete, unavailable, unresolved, unknown-model, unattributed-project, or source diagnostic evidence. These conditions do not establish timeline gaps.</p>}
-        <p className="dashboard-muted">{local.coverageNote}</p>
-      </details>
+      {data.quotaAnalysis && <QuotaAnalysis analysis={data.quotaAnalysis} />}
       <p className="dashboard-disclaimer">Estimated costs reflect locally recorded usage and your configured prices. They are not an OpenAI charge or complete account usage.</p>
     </> : loading ? <div className="dashboard-loading" aria-label="Loading dashboard"><div /><div /><div /><div /><div /><div /></div> : !error && <div className="chart-empty" role="status"><strong>No dashboard data available</strong><p>Check your session source in Settings.</p></div>}
   </div>;
