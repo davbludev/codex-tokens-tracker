@@ -14,7 +14,7 @@ npm run tauri -- dev
 ```
 
 Build the Windows installer with `npm run tauri -- build`. The installer is
-created under `src-tauri/target/release/bundle/nsis/` as `Codex usage_0.1.0_x64-setup.exe`.
+created under `src-tauri/target/release/bundle/nsis/` as `Codex usage_0.2.0_x64-setup.exe`.
 Run it to install for the current Windows user, add **Codex usage** to the Start
 menu, and register the app in Windows Installed apps for removal. The installer
 offers English and Russian. The application keeps using the same local data

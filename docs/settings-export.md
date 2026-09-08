@@ -14,7 +14,8 @@ when saved and are restored when the tracker starts. All three default to off.
 See [desktop monitoring](desktop-monitoring.md) for tray actions and startup behavior.
 
 Diagnostics reports the SQLite database path, combined database and WAL size in
-bytes, observed session count excluding missing-parent placeholders, normalized
+bytes (retiring usage older than 45 days frees pages for reuse, so the size stops
+growing rather than shrinking), observed session count excluding missing-parent placeholders, normalized
 usage record count (including pending/rejected records), the monitored directory,
 source availability, and concise metadata-only errors. Last successful ingestion
 is the local time when a complete-line batch committed, not the timestamp of an

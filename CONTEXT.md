@@ -34,8 +34,18 @@ The valuation of token usage at user-configured prices, rather than an actual ch
 _Avoid_: Actual cost, amount charged, bill
 
 **Unpriced usage**:
-Usage whose estimated token cost is unknown because no applicable configured price covers it.
+Usage whose estimated token cost is unknown because no applicable configured price covers it, including usage more than the valuation reach-back before a model's first price.
 _Avoid_: Free usage, zero-cost usage
+
+**Valuation reach-back**:
+The seven days before a price version's effective time during which earlier usage of that model, if no other price applies, is valued once with that version.
+
+**Retired usage**:
+Observations, their valuations and weekly limit samples older than 45 days before the newest stored time, removed from local storage and never re-imported.
+_Avoid_: Deleted history, purged data
+
+**Estimated cost by token category**:
+The split of an interval's estimated token cost into input, cached input, cache-write and output amounts, each observation at its own model's price version; the four amounts add up to the interval's estimated token cost.
 
 **Known cost subtotal**:
 The sum of estimated token costs for priced usage within a scope; it is incomplete when that scope also contains unpriced usage.

@@ -68,7 +68,10 @@ usage through `evaluatedAt`. No sample means no unmatched interval is asserted.
 
 Cost includes each accepted observation exactly once with
 `start < usage timestamp <= end`, using stored immutable valuations. It never
-reprices historical usage. Subtotals are integer strings in trillionths of USD.
+reprices historical usage. Observations, valuations and limit samples older
+than 45 days before the newest stored time are retired in bounded batches, so
+the oldest retained cycle can start at its first retained sample rather than
+its true reset; the current cycle is never affected. Subtotals are integer strings in trillionths of USD.
 Entirely unpriced usage has null subtotal and false completeness; partially
 priced usage has an explicitly incomplete known subtotal. An observed interval
 with no local usage has known zero cost and true completeness. Relevant unpriced

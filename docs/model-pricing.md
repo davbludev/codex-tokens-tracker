@@ -14,10 +14,16 @@ original policies; saving uses the displayed convention for the new version.
 The dashboard's token-combination comparison requires no prices. Initial backfill is
 unchecked by default and offered only before a model has a configured price.
 Later saves create future-effective versions. Existing valuations stay immutable.
+Each observation is valued once with the nearest price: the latest version
+effective at or before it, else a backfill, else the model's earliest later
+version when that version becomes effective within seven days (the valuation
+reach-back). Usage further back than seven days stays unpriced unless backfilled.
 If the initial backfill was skipped, a configured model with older unpriced usage
 offers one explicit "Backfill older unpriced usage" action behind a confirmation.
 It associates the model's immutable first price with that older usage; it never
 creates a version or changes an existing valuation, and it disappears once used.
+Usage older than 45 days is retired together with its valuations; see
+[the value-once ADR](adr/0002-value-once-and-retire-usage.md).
 
 ## Delivery boundary
 
