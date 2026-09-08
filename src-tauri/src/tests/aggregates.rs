@@ -749,7 +749,7 @@ fn aggregates_merge_only_confirmed_worktrees_and_migrate_read_indexes() {
     assert_eq!(groups.items[1].attribution.basis, "confirmedRepository");
     assert_eq!(total(&groups.items[1].direct), Some("130"));
     // Restore a v5-shaped fixture, including removal of later pricing schema.
-    store.connection().execute_batch("DROP TABLE pricing_work; DROP TABLE observation_valuations; DROP TABLE model_price_versions; DROP TABLE detected_models; DROP INDEX observation_pricing_model; DROP INDEX session_effective_children; DROP INDEX observation_model_bucket; PRAGMA user_version=5;").unwrap();
+    store.connection().execute_batch("DROP TABLE model_price_backfills; DROP TABLE pricing_work; DROP TABLE observation_valuations; DROP TABLE model_price_versions; DROP TABLE detected_models; DROP INDEX observation_pricing_model; DROP INDEX session_effective_children; DROP INDEX observation_model_bucket; PRAGMA user_version=5;").unwrap();
     drop(store);
     let mut store = Store::open(&db).unwrap();
     assert_eq!(total(&global(&mut store)), Some("135"));

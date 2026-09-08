@@ -30,6 +30,10 @@
 .rate-grid input { font-variant-numeric: tabular-nums; }
 .model-pricing .backfill-option { display: flex; align-items: flex-start; gap: 10px; padding: 13px; margin-top: 20px; border: 1px solid var(--border, #2a3442); border-radius: 8px; background: var(--surface-raised, #1b2330); cursor: pointer; font-size: 12px; font-weight: 400; line-height: 1.55; }
 .backfill-option input { flex-shrink: 0; margin-top: 3px; accent-color: var(--accent, #59d6ed); }
+.pricing-backfill { margin-top: 4px; }
+.pricing-backfill-confirmation { margin-top: 14px; padding: 13px; border: 1px solid #e5b96f80; border-radius: 8px; background: #e5b96f12; }
+.pricing-backfill-confirmation p { margin-bottom: 10px; }
+.pricing-backfill-confirmation button + button { margin-left: 8px; }
 .model-pricing .field-error { color: #ffb6ad; margin: 6px 0 12px; }
 .model-pricing [aria-invalid=true] { border-color: #ffb6ad !important; }
 .pricing-save { display: flex; align-items: center; gap: 16px; border-top: 1px solid var(--border, #2a3442); padding-top: 18px; }

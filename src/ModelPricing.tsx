@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Draft, FieldErrors, newDraft, pricingError, rateFields, rateLabels, savePrice, usePricingCatalog, validateDraft } from "./pricing";
+import { backfillPrice, Draft, FieldErrors, newDraft, pricingError, rateFields, rateLabels, savePrice, usePricingCatalog, validateDraft } from "./pricing";
 import "./pricing.css";
 
 export function ModelPricing({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -11,6 +11,7 @@ export function ModelPricing({ open, onClose }: { open: boolean; onClose: () => 
   const [focusErrors, setFocusErrors] = useState(0);
   const [failure, setFailure] = useState("");
   const [status, setStatus] = useState("");
+  const [confirmBackfill, setConfirmBackfill] = useState(false);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
   const { models, loading, error: catalogError, connectionError, reload, updatePrice } = usePricingCatalog(open, saving);
@@ -31,7 +32,7 @@ export function ModelPricing({ open, onClose }: { open: boolean; onClose: () => 
     if (!model || !draft) return;
     setDrafts(current => new Map(current).set(model.model, { ...draft, [field]: value }));
     setErrors(current => ({ ...current, [field]: undefined }));
-    setFailure(""); setStatus("");
+    setFailure(""); setStatus(""); setConfirmBackfill(false);
   }
 
   async function submit(event: React.FormEvent) {
@@ -53,6 +54,19 @@ export function ModelPricing({ open, onClose }: { open: boolean; onClose: () => 
     } finally { savingRef.current = false; setSaving(false); }
   }
 
+  async function confirmHistoricalBackfill() {
+    if (!model || savingRef.current) return;
+    savingRef.current = true; setSaving(true); setFailure("");
+    try {
+      await backfillPrice(model);
+      reload();
+      setConfirmBackfill(false);
+      setStatus("Historical backfill scheduled. Existing priced history stays unchanged.");
+    } catch (error) {
+      setFailure(pricingError(error).message);
+    } finally { savingRef.current = false; setSaving(false); }
+  }
+
   return <dialog ref={dialog} className="model-pricing" aria-labelledby="pricing-title" onClose={onClose}>
     <header className="pricing-header"><div><span className="pricing-eyebrow">Cost estimates</span><h2 id="pricing-title">Model Pricing</h2></div><button type="button" onClick={() => dialog.current?.close()} autoFocus>Close</button></header>
     <p className="pricing-introduction">Set your USD rates per million tokens. Models appear automatically from your local session history.</p>
@@ -62,7 +76,7 @@ export function ModelPricing({ open, onClose }: { open: boolean; onClose: () => 
       <label htmlFor="pricing-search" className="pricing-visually-hidden">Search detected models</label>
       <input id="pricing-search" type="search" placeholder="Search models…" value={search} onChange={event => setSearch(event.target.value)} />
       <ul className="pricing-models" aria-label="Detected models">
-        {filtered.map(item => <li key={item.model}><button type="button" disabled={saving} aria-pressed={selected === item.model} onClick={() => { setSelected(item.model); setErrors({}); setFailure(""); setStatus(""); }}>
+        {filtered.map(item => <li key={item.model}><button type="button" disabled={saving} aria-pressed={selected === item.model} onClick={() => { setSelected(item.model); setErrors({}); setFailure(""); setStatus(""); setConfirmBackfill(false); }}>
           <span>{item.model}</span><small className={item.latestPrice ? "pricing-configured" : "pricing-unpriced"}><i aria-hidden="true" />{item.latestPrice ? "Configured" : "Unpriced"}</small>
         </button></li>)}
       </ul>
@@ -87,7 +101,10 @@ export function ModelPricing({ open, onClose }: { open: boolean; onClose: () => 
         {!model.latestPrice ? <label className="backfill-option">
           <input type="checkbox" checked={draft.backfillBefore} onChange={event => update("backfillBefore", event.target.checked)} aria-invalid={!!errors.backfillBefore} aria-describedby={errors.backfillBefore ? "error-backfill" : undefined} />
           <span>Apply this first price to older unpriced usage for this model. Leaving this unchecked covers usage from the save time onward.</span>
-        </label> : <p>This model already has a price. Saving creates a new version for usage from the save time onward. Previously priced usage is never recalculated.</p>}
+        </label> : <><p>This model already has a price. Saving creates a new version for usage from the save time onward. Previously priced usage is never recalculated.</p>
+          {model.backfillAvailable && !confirmBackfill && <button type="button" className="pricing-backfill" onClick={() => { setConfirmBackfill(true); setFailure(""); setStatus(""); }}>Backfill older unpriced usage</button>}
+          {model.backfillAvailable && confirmBackfill && <div className="pricing-backfill-confirmation" role="alert"><p>Use this model’s first saved price for all older unpriced usage? Existing priced history will not change.</p><button type="button" onClick={() => void confirmHistoricalBackfill()}>Confirm backfill</button><button type="button" onClick={() => setConfirmBackfill(false)}>Cancel</button></div>}
+        </>}
         {errors.backfillBefore && <p className="field-error" id="error-backfill">{errors.backfillBefore} Reload models to see the current version.</p>}
         {model.latestPrice && <p className="coverage">Latest price effective {new Date(model.latestPrice.effectiveSeconds * 1000).toLocaleString()}.</p>}
       </fieldset>

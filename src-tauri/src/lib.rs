@@ -37,6 +37,7 @@ pub fn run() {
             commands::usage_dashboard,
             commands::pricing::pricing_models,
             commands::pricing::save_model_price,
+            commands::pricing::backfill_model_price,
             commands::settings::tracker_settings,
             commands::settings::save_tracker_settings,
             commands::settings::tracker_diagnostics,

@@ -100,7 +100,7 @@ impl Store {
         let mut connection = Connection::open(path)?;
         connection.busy_timeout(std::time::Duration::from_secs(3))?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > 8 {
+        if version > 9 {
             return Err(Error::Schema);
         }
         if version == 0 {
@@ -163,6 +163,11 @@ impl Store {
         if version < 8 {
             let tx = connection.transaction()?;
             tx.execute_batch(include_str!("../migrations/008_tracker_settings.sql"))?;
+            tx.commit()?;
+        }
+        if version < 9 {
+            let tx = connection.transaction()?;
+            tx.execute_batch(include_str!("../migrations/009_model_price_backfills.sql"))?;
             tx.commit()?;
         }
         Ok(Self { connection })

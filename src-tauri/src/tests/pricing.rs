@@ -520,6 +520,60 @@ fn pricing_source_boundaries_edits_and_no_implicit_backfill() {
 }
 
 #[test]
+fn pricing_late_backfill_values_only_older_unpriced_usage_with_the_first_price() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&temp.path().join("pricing.sqlite")).unwrap();
+    context(&mut store, "a", "thread", Some("model"));
+    let old = usage(
+        &mut store,
+        "a",
+        "thread",
+        1,
+        "2026-01-01T00:00:00.999999999Z",
+    );
+    let first = store
+        .save_model_price_at("model", prices(), false, time("2026-01-01T00:00:01Z"))
+        .unwrap();
+    let boundary = usage(&mut store, "a", "thread", 2, "2026-01-01T00:00:01Z");
+    let mut changed = prices();
+    changed.input = "2".into();
+    let second = store
+        .save_model_price_at("model", changed, false, time("2026-01-01T00:00:02Z"))
+        .unwrap();
+    let later = usage(&mut store, "a", "thread", 3, "2026-01-01T00:00:02Z");
+    drain(&mut store);
+    assert!(store.observation_valuation(old).unwrap().is_none());
+    let boundary_before = store.observation_valuation(boundary).unwrap().unwrap();
+    let later_before = store.observation_valuation(later).unwrap().unwrap();
+    assert_eq!(boundary_before.version_id, first.id);
+    assert_eq!(later_before.version_id, second.id);
+
+    let backfilled = store.backfill_first_model_price("model").unwrap();
+    assert_eq!(
+        (backfilled.id, backfilled.backfill_before),
+        (first.id, false)
+    );
+    assert!(store.pricing_work_pending().unwrap());
+    drain(&mut store);
+
+    let old_value = store.observation_valuation(old).unwrap().unwrap();
+    assert_eq!(
+        (old_value.version_id, old_value.amount.as_str()),
+        (first.id, "210000000")
+    );
+    assert_eq!(
+        store.observation_valuation(boundary).unwrap().unwrap(),
+        boundary_before
+    );
+    assert_eq!(
+        store.observation_valuation(later).unwrap().unwrap(),
+        later_before
+    );
+    assert!(!store.pricing_models(None).unwrap()[0].backfill_available);
+    assert!(store.backfill_first_model_price("model").is_err());
+}
+
+#[test]
 fn pricing_initial_backfill_is_bounded_durable_and_immutable_on_reimport() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("pricing.sqlite");

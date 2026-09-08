@@ -26,6 +26,7 @@ pub struct PriceVersion {
 pub struct DetectedModel {
     pub model: String,
     pub latest_price: Option<PriceVersion>,
+    pub backfill_available: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -63,8 +64,65 @@ impl Store {
             let latest_price = self.connection.query_row(
                 "SELECT id,model,effective_seconds,effective_nanos,backfill_before,configuration FROM model_price_versions WHERE model=? ORDER BY effective_seconds DESC,effective_nanos DESC LIMIT 1",
                 [&model], version).optional()?;
-            Ok(DetectedModel { model, latest_price })
+            let first_price = self.connection.query_row(
+                "SELECT id,model,effective_seconds,effective_nanos,backfill_before,configuration FROM model_price_versions WHERE model=? ORDER BY effective_seconds,effective_nanos LIMIT 1",
+                [&model], version).optional()?;
+            let backfill_available = if let Some(first) = first_price.as_ref().filter(|first| !first.backfill_before) {
+                self.connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM observations o WHERE o.model=? AND o.accepted=1 AND o.time_seconds IS NOT NULL AND o.time_nanos IS NOT NULL AND (o.time_seconds,o.time_nanos)<(?,?) AND NOT EXISTS(SELECT 1 FROM observation_valuations v WHERE v.observation_id=o.id)) AND NOT EXISTS(SELECT 1 FROM model_price_backfills WHERE model=?)",
+                    params![model, first.effective_seconds, first.effective_nanos, model],
+                    |row| row.get(0),
+                )?
+            } else {
+                false
+            };
+            Ok(DetectedModel { model, latest_price, backfill_available })
         }).collect()
+    }
+
+    /// Enable the first price's explicit historical coverage for observations
+    /// that still have no durable valuation. Existing valuations remain fixed.
+    pub fn backfill_first_model_price(&mut self, model: &str) -> Result<PriceVersion> {
+        let tx = self.connection.transaction()?;
+        let detected: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM detected_models WHERE model=?)",
+            [model],
+            |row| row.get(0),
+        )?;
+        if !detected {
+            return Err(pricing::Error::UnknownModel.into());
+        }
+        let first: Option<PriceVersion> = tx.query_row(
+            "SELECT id,model,effective_seconds,effective_nanos,backfill_before,configuration FROM model_price_versions WHERE model=? ORDER BY effective_seconds,effective_nanos LIMIT 1",
+            [model],
+            version,
+        ).optional()?;
+        let Some(first) = first else {
+            return Err(pricing::Error::BackfillUnavailable.into());
+        };
+        let available: bool = !first.backfill_before && tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM observations o WHERE o.model=? AND o.accepted=1 AND o.time_seconds IS NOT NULL AND o.time_nanos IS NOT NULL AND (o.time_seconds,o.time_nanos)<(?,?) AND NOT EXISTS(SELECT 1 FROM observation_valuations v WHERE v.observation_id=o.id)) AND NOT EXISTS(SELECT 1 FROM model_price_backfills WHERE model=?)",
+            params![model, first.effective_seconds, first.effective_nanos, model],
+            |row| row.get(0),
+        )?;
+        if !available {
+            return Err(pricing::Error::BackfillUnavailable.into());
+        }
+        tx.execute(
+            "INSERT INTO model_price_backfills(model,version_id) VALUES(?,?)",
+            params![model, first.id],
+        )?;
+        let through: i64 =
+            tx.query_row("SELECT COALESCE(MAX(id),0) FROM observations", [], |row| {
+                row.get(0)
+            })?;
+        tx.execute("DELETE FROM pricing_work WHERE version_id=?", [first.id])?;
+        tx.execute(
+            "INSERT INTO pricing_work(version_id,after_id,through_id) VALUES(?,0,?)",
+            params![first.id, through],
+        )?;
+        tx.commit()?;
+        Ok(first)
     }
 
     pub fn save_model_price(
@@ -207,7 +265,18 @@ pub(super) fn value_observation(tx: &Transaction<'_>, id: i64) -> Result<()> {
     let selected = tx.query_row("SELECT id,model,effective_seconds,effective_nanos,backfill_before,configuration FROM model_price_versions WHERE model=? AND (effective_seconds,effective_nanos)<=(?,?) ORDER BY effective_seconds DESC,effective_nanos DESC LIMIT 1", params![model,seconds,nanos], version).optional()?;
     let selected = match selected {
         Some(value) => Some(value),
-        None => tx.query_row("SELECT id,model,effective_seconds,effective_nanos,backfill_before,configuration FROM model_price_versions WHERE model=? ORDER BY effective_seconds,effective_nanos LIMIT 1", [&model], version).optional()?.filter(|v| v.backfill_before),
+        None => {
+            let explicit = tx.query_row(
+                "SELECT p.id,p.model,p.effective_seconds,p.effective_nanos,p.backfill_before,p.configuration FROM model_price_backfills b JOIN model_price_versions p ON p.id=b.version_id WHERE b.model=?",
+                [&model],
+                version,
+            ).optional()?;
+            if explicit.is_some() {
+                explicit
+            } else {
+                tx.query_row("SELECT id,model,effective_seconds,effective_nanos,backfill_before,configuration FROM model_price_versions WHERE model=? ORDER BY effective_seconds,effective_nanos LIMIT 1", [&model], version).optional()?.filter(|v| v.backfill_before)
+            }
+        }
     };
     let Some(selected) = selected else {
         return Ok(());

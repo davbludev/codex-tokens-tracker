@@ -12,7 +12,7 @@ export type PriceVersion = {
   id: number; model: string; effectiveSeconds: number; effectiveNanos: number;
   backfillBefore: boolean; configuration: PriceInput;
 };
-export type DetectedModel = { model: string; latestPrice: PriceVersion | null };
+export type DetectedModel = { model: string; latestPrice: PriceVersion | null; backfillAvailable: boolean };
 export type PricingPage = { models: DetectedModel[]; nextCursor: string | null };
 export type Draft = Omit<PriceInput, "reasoning"> & { reasoning: string; backfillBefore: boolean };
 export type FieldErrors = Partial<Record<keyof Draft, string>>;
@@ -127,3 +127,4 @@ export function usePricingCatalog(active: boolean, saving = false) {
 export const savePrice = (model: DetectedModel, draft: Draft) => invoke<PriceVersion>("save_model_price", {
   model: model.model, configuration: priceConfiguration(draft), backfillBefore: !model.latestPrice && draft.backfillBefore,
 });
+export const backfillPrice = (model: DetectedModel) => invoke<PriceVersion>("backfill_model_price", { model: model.model });

@@ -29,6 +29,10 @@ pub(crate) enum Request {
         backfill_before: bool,
         reply: mpsc::Sender<Result<PriceVersion, Error>>,
     },
+    Backfill {
+        model: String,
+        reply: mpsc::Sender<Result<PriceVersion, Error>>,
+    },
 }
 
 #[derive(Clone)]
@@ -73,6 +77,7 @@ impl From<storage::Error> for Error {
                 ReasoningRate => ("reasoning_rate", Some("reasoning")),
                 UnknownModel => ("unknown_model", None),
                 BackfillOnlyFirst => ("backfill_only_first", Some("backfillBefore")),
+                BackfillUnavailable => ("backfill_unavailable", None),
                 Clock => ("clock", None),
                 _ => ("invalid_configuration", None),
             };
@@ -141,6 +146,17 @@ pub(crate) fn handle(request: Request, store: &mut Store, work: &mut Work) {
                 .map_err(Error::from);
             let _ = reply.send(result);
         }
+        Request::Backfill { model, reply } => {
+            let result = store
+                .backfill_first_model_price(&model)
+                .map(|version| {
+                    // The historical-coverage flag and durable job commit before waking.
+                    work.request_pricing();
+                    version
+                })
+                .map_err(Error::from);
+            let _ = reply.send(result);
+        }
     }
 }
 
@@ -172,6 +188,19 @@ pub async fn save_model_price(
             backfill_before,
             reply,
         })
+    })
+    .await
+    .map_err(|_| Error::unavailable())?
+}
+
+#[tauri::command]
+pub async fn backfill_model_price(
+    control: tauri::State<'_, Control>,
+    model: String,
+) -> Result<PriceVersion, Error> {
+    let control = control.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        control.request(|reply| Request::Backfill { model, reply })
     })
     .await
     .map_err(|_| Error::unavailable())?

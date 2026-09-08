@@ -14,17 +14,27 @@ original policies; saving uses the displayed convention for the new version.
 The dashboard's token-combination comparison requires no prices. Initial backfill is
 unchecked by default and offered only before a model has a configured price.
 Later saves create future-effective versions. Existing valuations stay immutable.
+If the initial backfill was skipped, a configured model with older unpriced usage
+offers one explicit "Backfill older unpriced usage" action behind a confirmation.
+It associates the model's immutable first price with that older usage; it never
+creates a version or changes an existing valuation, and it disappears once used.
 
 ## Delivery boundary
 
 `pricing_models({ after: string | null })` returns `{ models, nextCursor }`.
 The cursor is the exact final model name for a full 64-item page, otherwise null.
-Each model contains its latest price version, if any. Pages do not represent a
-frozen snapshot; callers deduplicate model names and restart when refreshing.
+Each model contains its latest price version, if any, and `backfillAvailable`,
+true only when a configured model still has older unpriced usage that its first
+price could cover. Pages do not represent a frozen snapshot; callers deduplicate
+model names and restart when refreshing.
 
 `save_model_price({ model, configuration, backfillBefore })` returns the committed
 price version. Configuration keys are camelCase, while policy values use
 snake_case (`included_input_disjoint`, for example). Rates cross IPC as strings.
+
+`backfill_model_price({ model })` returns the first price version now covering the
+model's older unpriced usage and schedules its valuation. It fails with
+`backfill_unavailable` when nothing older is unpriced or a backfill already exists.
 
 Both operations use the same bounded inbox as native source events. The sole
 writer processes a bounded inbox batch before advancing ingestion/pricing work.

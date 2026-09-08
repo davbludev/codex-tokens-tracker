@@ -13,6 +13,8 @@ pub enum Error {
     UnknownModel,
     #[error("Older usage can be covered only by the model's first price")]
     BackfillOnlyFirst,
+    #[error("No older unpriced usage is available for this model")]
+    BackfillUnavailable,
     #[error("The system clock must be later than this model's last price change")]
     Clock,
     #[error("Token categories are missing")]

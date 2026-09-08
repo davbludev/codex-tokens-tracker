@@ -74,6 +74,7 @@ pub(super) fn read(
         LEFT JOIN observation_valuations v ON v.observation_id=o.id
         LEFT JOIN model_price_versions p ON p.id=COALESCE(v.version_id,
           (SELECT id FROM model_price_versions WHERE model=o.model AND (effective_seconds,effective_nanos)<=(o.time_seconds,o.time_nanos) ORDER BY effective_seconds DESC,effective_nanos DESC LIMIT 1),
+          (SELECT version_id FROM model_price_backfills WHERE model=o.model),
           (SELECT id FROM model_price_versions WHERE model=o.model AND backfill_before=1 ORDER BY effective_seconds,effective_nanos LIMIT 1))
         WHERE o.accepted=1 AND (o.time_seconds,o.time_nanos)>(?1,?2) AND (o.time_seconds,o.time_nanos)<=(?3,?4)
         GROUP BY o.id ORDER BY o.time_seconds,o.time_nanos,o.id", token_fields());

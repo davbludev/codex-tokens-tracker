@@ -20,7 +20,9 @@ try {
   await page.addInitScript(() => {
     const names = Array.from({ length: 65 }, (_, i) => `model-${String(i).padStart(3, "0")}`);
     names.push("constructor"); names.sort();
-    const state = window.pricingTest = { names, calls: [], saves: [], callbacks: {}, listeners: {}, releases: [], holdPage: false, holdSave: false, activeReads: 0, maxReads: 0, failPage: true, failSave: true, versions: Object.create(null) };
+    const versions = Object.create(null);
+    versions["model-000"] = { id: 800, model: "model-000", configuration: { input: "1", cachedInput: "0.5", cacheWrite: "2", output: "3", reasoning: null, reasoningPolicy: "included", cacheWritePolicy: "additional" }, backfillBefore: false, effectiveSeconds: 1700000000, effectiveNanos: 0 };
+    const state = window.pricingTest = { names, calls: [], saves: [], backfills: [], callbacks: {}, listeners: {}, releases: [], holdPage: false, holdSave: false, activeReads: 0, maxReads: 0, failPage: true, failSave: true, versions, backfillAvailable: new Set(["model-000"]) };
     window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
     window.__TAURI_INTERNALS__ = {
       transformCallback: callback => { const id = Object.keys(state.callbacks).length + 1; state.callbacks[id] = callback; return id; },
@@ -33,7 +35,7 @@ try {
           state.calls.push(args.after);
           if (args.after && state.failPage) { state.failPage = false; throw { code: "busy", message: "The monitor is busy. Try again shortly." }; }
           const start = args.after ? names.indexOf(args.after) + 1 : 0;
-          const models = names.slice(start, start + 64).map(model => ({ model, latestPrice: state.versions[model] ?? null }));
+          const models = names.slice(start, start + 64).map(model => ({ model, latestPrice: state.versions[model] ?? null, backfillAvailable: state.backfillAvailable.has(model) }));
           state.activeReads++; state.maxReads = Math.max(state.maxReads, state.activeReads);
           if (args.after && state.holdPage) { state.holdPage = false; await new Promise(resolve => state.releases.push(resolve)); }
           state.activeReads--;
@@ -45,7 +47,13 @@ try {
           if (state.failSave) { state.failSave = false; throw { code: "invalid_rate", field: "input", message: "Enter a nonnegative decimal price within the supported range" }; }
           const version = { id: state.saves.length, model: args.model, configuration: args.configuration, backfillBefore: args.backfillBefore, effectiveSeconds: 1800000000, effectiveNanos: 0 };
           state.versions[args.model] = version;
+          state.backfillAvailable.delete(args.model);
           return version;
+        }
+        if (command === "backfill_model_price") {
+          state.backfills.push(args);
+          state.backfillAvailable.delete(args.model);
+          return state.versions[args.model];
         }
         return null;
       },
@@ -71,10 +79,7 @@ try {
   assert.equal(await page.locator("#price-input").evaluate(el => el === document.activeElement), true);
   assert.equal(await page.evaluate(() => window.pricingTest.saves.length), 0);
   for (const [id, value] of [["input", "0001.000001"], ["cachedInput", "0"], ["cacheWrite", "2.25"], ["output", "3"]]) await page.locator(`#price-${id}`).fill(value);
-  await page.getByLabel("How should reasoning tokens be priced?").selectOption("separate");
-  await page.getByLabel("Reasoning (USD / 1M)", { exact: true }).fill("4.000001");
-  await page.getByLabel("How should reasoning tokens be priced?").selectOption("included");
-  await page.getByLabel("How do cache-write tokens relate to input?").selectOption("included_input_disjoint");
+  assert.equal(await page.locator("#price-reasoning").count(), 0, "reasoning is priced inside output; no separate field");
   await page.getByLabel("Apply this first price", { exact: false }).check();
   // Metadata-only model discovery during a paged refresh must trigger a full trailing scan.
   await page.evaluate(() => { window.pricingTest.holdPage = true; });
@@ -113,10 +118,18 @@ try {
   const saved = await page.evaluate(() => window.pricingTest.saves.at(-1));
   assert.equal(saved.configuration.input, "0001.000001");
   assert.equal(saved.configuration.reasoning, null);
-  assert.equal(saved.configuration.cacheWritePolicy, "included_input_disjoint");
+  assert.equal(saved.configuration.reasoningPolicy, "included");
+  assert.equal(saved.configuration.cacheWritePolicy, "additional");
   assert.equal(saved.backfillBefore, true);
-  await page.getByLabel("How should reasoning tokens be priced?").selectOption("separate");
-  assert.equal(await page.locator("#price-reasoning").inputValue(), "4.000001");
+  await choose("model-000");
+  await dialog.getByRole("button", { name: "Backfill older unpriced usage", exact: true }).click();
+  await dialog.getByText("Use this model’s first saved price", { exact: false }).waitFor();
+  assert.equal(await page.evaluate(() => window.pricingTest.backfills.length), 0);
+  await dialog.getByRole("button", { name: "Confirm backfill", exact: true }).click();
+  await dialog.getByText("Historical backfill scheduled.", { exact: false }).waitFor();
+  assert.deepEqual(await page.evaluate(() => window.pricingTest.backfills), [{ model: "model-000" }]);
+  await choose("constructor");
+  assert.equal(await page.locator("#price-cacheWrite").inputValue(), "2.25", "draft survives switching models after a backfill");
   await page.evaluate(() => { window.pricingTest.holdSave = true; });
   await page.getByRole("button", { name: "Save price", exact: true }).click();
   await page.waitForFunction(() => window.pricingTest.releases.length === 1);
