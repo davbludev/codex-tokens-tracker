@@ -2,6 +2,7 @@ import { DashboardChart } from "./DashboardChart";
 import { UsageChart } from "./UsageChart";
 import { UsageBreakdowns } from "./UsageBreakdowns";
 import { QuotaAnalysis } from "./QuotaAnalysis";
+import { QuotaCategoryCosts } from "./QuotaCategoryCosts";
 import { compactCost, compactTokens, costText, exactTime, exactTokens, localTime, ranges, unavailable, usd, useDashboard } from "./dashboard-data";
 import type { WeeklyEstimate } from "./dashboard-types";
 import "./dashboard.css";
@@ -54,6 +55,7 @@ export function Dashboard({ onOpenPricing }: { onOpenPricing?: () => void }) {
         <DashboardChart chart={data.chart} />
       </section>
       {data.quotaAnalysis && <QuotaAnalysis analysis={data.quotaAnalysis} />}
+      {data.quotaAnalysis && <QuotaCategoryCosts analysis={data.quotaAnalysis} />}
       <p className="dashboard-disclaimer">Estimated costs reflect locally recorded usage and your configured prices. They are not an OpenAI charge or complete account usage.</p>
     </> : loading ? <div className="dashboard-loading" aria-label="Loading dashboard"><div /><div /><div /><div /><div /><div /></div> : !error && <div className="chart-empty" role="status"><strong>No dashboard data available</strong><p>Check your session source in Settings.</p></div>}
   </div>;

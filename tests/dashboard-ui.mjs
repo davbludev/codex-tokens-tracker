@@ -20,7 +20,7 @@ try {
     const response = await route.fetch();
     const source = await response.text();
     assert.ok(source.includes("export { uPlot as default };"));
-    await route.fulfill({ response, body: source.replace("export { uPlot as default };", "const ObservedPlot = new Proxy(uPlot, { construct(target, args) { const plot = Reflect.construct(target, args); if (plot.series.some(series => series.scale === 'weekly')) window.dashboardPlot = plot; if (args[2]?.classList.contains('quota-analysis-plot')) window.hypothesisPlot = plot; return plot; } }); export { ObservedPlot as default };") });
+    await route.fulfill({ response, body: source.replace("export { uPlot as default };", "const ObservedPlot = new Proxy(uPlot, { construct(target, args) { const plot = Reflect.construct(target, args); if (plot.series.some(series => series.scale === 'weekly')) window.dashboardPlot = plot; if (args[2]?.classList.contains('quota-analysis-plot')) window.hypothesisPlot = plot; if (args[2]?.classList.contains('quota-categories-plot')) window.categoryPlot = plot; return plot; } }); export { ObservedPlot as default };") });
   });
   if (!process.env.DASHBOARD_APP_MOUNT) await page.route("http://127.0.0.1:1422/", route => route.fulfill({ contentType: "text/html", body: '<html><div id="root"></div><script type="module">import React from "/node_modules/.vite/deps/react.js"; import ReactDOM from "/node_modules/.vite/deps/react-dom_client.js"; import {Dashboard} from "/src/Dashboard.tsx"; import "/src/style.css"; ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(Dashboard));</script></html>' }));
   await page.addInitScript(() => {
@@ -61,7 +61,7 @@ try {
         ], boundaries: [{ binIndex: 9, firstTime: time(1800001000), lastTime: time(1800001000), count: 1, kinds: ["reset"], overloaded: false }],
       },
     };
-    response.quotaAnalysis = { totalIntervals: 3, intervals: [1, 2, 3].map(n => ({ start: time(1800000000 + n * 100), end: time(1800000050 + n * 100), consumedPercentagePoints: String(n), tokens: tokens(160), hypotheses: Array.from({ length: 16 }, (_, index) => ({ mask: index % 8, writesIncluded: index >= 8, tokens: String((115 + (index % 8 & 1 ? 20 : 0) + (index % 8 & 2 ? 10 : 0) + (index % 8 & 4 ? 15 : 0) - (index >= 8 ? 10 : 0)) * n), estimatedUsd: String(BigInt((300 + (index % 8 & 1 ? 10 : 0) + (index % 8 & 2 ? 30 : 0) + (index % 8 & 4 ? 90 : 0) - (index >= 8 ? 20 : 0)) * n) * 1000000n), tokenReason: null, priceReason: null })) })) };
+    response.quotaAnalysis = { totalIntervals: 3, intervals: [1, 2, 3].map(n => ({ start: time(1800000000 + n * 100), end: time(1800000050 + n * 100), consumedPercentagePoints: String(n), tokens: tokens(160), hypotheses: Array.from({ length: 16 }, (_, index) => ({ mask: index % 8, writesIncluded: index >= 8, tokens: String((115 + (index % 8 & 1 ? 20 : 0) + (index % 8 & 2 ? 10 : 0) + (index % 8 & 4 ? 15 : 0) - (index >= 8 ? 10 : 0)) * n), estimatedUsd: String(BigInt((300 + (index % 8 & 1 ? 10 : 0) + (index % 8 & 2 ? 30 : 0) + (index % 8 & 4 ? 90 : 0) - (index >= 8 ? 20 : 0)) * n) * 1000000n), tokenReason: null, priceReason: null })), categories: { input: String(100000000000n * BigInt(n)), cachedInput: String(20000000000n * BigInt(n)), cacheWrites: String(30000000000n * BigInt(n)), output: String(50000000000n * BigInt(n)), reason: null } })) };
     const state = window.dashboardTest = { calls: [], callbacks: {}, listeners: new Set(), listener: "broadcast", active: 0, maxActive: 0, hold: false, releases: [], fail: false, response };
     state.callbacks.broadcast = event => { for (const handler of state.listeners) state.callbacks[handler](event); };
     window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: (_event, id) => state.listeners.delete(id) };
@@ -95,6 +95,19 @@ try {
   assert.equal(await cards.count(), 8);
   assert.deepEqual(await cards.locator(".hypothesis-badges").evaluateAll(elements => elements.map(el => el.textContent)), ["InputOutput", "InputOutputCached input", "InputOutputCache writes", "InputOutputReasoning", "InputOutputCached inputCache writes", "InputOutputCached inputReasoning", "InputOutputCache writesReasoning", "InputOutputCached inputCache writesReasoning"]);
   await page.waitForFunction(() => window.hypothesisPlot?.series.length === 9);
+  await page.waitForFunction(() => window.categoryPlot?.series.length === 5, undefined, { timeout: 10000 });
+  assert.deepEqual(await page.evaluate(() => [window.categoryPlot.data[1][0], window.categoryPlot.data[4][0], window.categoryPlot.data[1][2]]), [0.2, 0.1, 0.2], "stacked running totals per observed 1%, top series first");
+  assert.deepEqual(await page.evaluate(() => window.categoryPlot.series.slice(1).map(s => s.label)), ["Output", "Cache writes", "Cached input", "Input"]);
+  const categoryCards = page.locator(".category-card");
+  assert.equal(await categoryCards.count(), 4);
+  assert.match(await categoryCards.first().innerText(), /Input[\s\S]*\$0.100000[\s\S]*50%[\s\S]*\$10.000000/, "input is half of every interval's cost");
+  assert.match(await categoryCards.nth(3).innerText(), /Output[\s\S]*\$0.050000[\s\S]*25%/);
+  assert.match(await page.locator(".category-total").innerText(), /\$0.200000 USD \/ 1% · \$20.000000 USD \/ 100%/);
+  assert.equal(await page.locator(".quota-categories .hypothesis-unavailable").count(), 0);
+  await page.locator(".quota-categories-plot").focus(); await page.keyboard.press("End");
+  assert.match(await page.locator(".category-tooltip").innerText(), /\+3 percentage points[\s\S]*Cached input[\s\S]*\$0.020000 USD \/ 1%/);
+  await page.keyboard.press("ArrowLeft");
+  assert.match(await page.locator(".category-tooltip").innerText(), /\+2 percentage points/);
   const weighted = await page.evaluate(async () => {
     const { combinationStats, perPercent } = await import("/src/quota-combinations.ts");
     const base = structuredClone(window.dashboardTest.response.quotaAnalysis.intervals.slice(0, 2));
@@ -190,6 +203,7 @@ try {
       interval.hypotheses[1].tokens = null;
       interval.hypotheses[1].estimatedUsd = null;
       interval.hypotheses[1].tokenReason = "Invalid input subset subtraction";
+      interval.categories = { input: null, cachedInput: null, cacheWrites: null, output: null, reason: "Unpriced usage: no applicable model price" };
     }
     s.response.breakdowns.models[0].label = "long-model-name-with-a-very-long-version-and-localized-identifier-123456789";
     s.callbacks[s.listener]({ payload: {} });
@@ -197,6 +211,10 @@ try {
   await page.clock.runFor(200);
   await cards.first().getByText(/USD unavailable — Unpriced usage/).waitFor();
   await cards.nth(1).getByText(/Unavailable — Invalid input subset subtraction/).waitFor();
+  await page.locator(".quota-categories").getByText(/USD unavailable: no comparable priced intervals/).waitFor();
+  assert.equal(await page.locator(".quota-categories .uplot").count(), 0, "no chart when every interval is unpriced");
+  assert.match(await categoryCards.first().innerText(), /Unavailable/);
+  assert.match(await page.locator(".quota-categories .hypothesis-unavailable").innerText(), /USD unavailable — Unpriced usage: no applicable model price \(0 \/ 3 priced\)/);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "large exact numbers, unavailable reasons and long model names fit 390px: " + JSON.stringify(await page.locator("body *").evaluateAll(elements => elements.filter(el => el.getBoundingClientRect().right > innerWidth + 1).map(el => ({ tag: el.tagName, class: el.className, width: el.getBoundingClientRect().width })).slice(0, 12))));
   await page.setViewportSize({ width: 1200, height: 800 });
   await page.locator(".weekly-details > summary").click();
@@ -346,5 +364,5 @@ try {
   assert.equal(await page.locator(".usage-chart").getByText("No recorded activity", { exact: true }).count(), 2);
   assert.equal(await page.getByText("No recorded usage in this range.", { exact: true }).count(), 2);
   assert.deepEqual(failures, []);
-  console.log("Dashboard UI: eight hypotheses, shared chart, stable colors, weighted exact metrics, unavailable states, keyboard controls, 390px overflow and preserved upper dashboard checks passed.");
+  console.log("Dashboard UI: eight hypotheses, category cost panel, shared chart, stable colors, weighted exact metrics, unavailable states, keyboard controls, 390px overflow and preserved upper dashboard checks passed.");
 } finally { await browser?.close(); server.kill(); }

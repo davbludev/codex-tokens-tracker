@@ -27,3 +27,25 @@
 .quota-analysis :focus-visible { outline: 2px solid #80b7ff; outline-offset: 3px; }
 @media (max-width: 1050px) { .hypothesis-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } }
 @media (max-width: 560px) { .hypothesis-grid, .hypothesis-tooltip > div { grid-template-columns: minmax(0,1fr); } }
+.quota-categories { margin-top: 20px; min-width: 0; }
+.quota-categories > p { font-size: 13px; margin: 10px 0; line-height: 1.5; }
+.quota-categories-plot { width: 100%; min-width: 0; overflow: hidden; }
+.category-key { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 8px 0 0; padding: 0; list-style: none; font-size: 12px; color: var(--muted); }
+.category-key li { display: flex; align-items: center; gap: 6px; }
+.category-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 14px 0; }
+.category-card { min-width: 0; padding: 12px; border: 1px solid var(--border); border-top: 3px solid; border-radius: 8px; background: var(--surface); overflow-wrap: anywhere; }
+.category-card h3 { display: flex; align-items: center; gap: 7px; margin: 0 0 8px; font-size: 13px; font-weight: 600; }
+.category-card dl { margin: 0; display: grid; gap: 7px; }
+.category-card dl > div { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 2px 8px; font-size: 12px; }
+.category-card dd { margin: 0; font-size: 14px; font-variant-numeric: tabular-nums; }
+.category-share { height: 4px; margin-top: 10px; border-radius: 2px; background: #26303c; overflow: hidden; }
+.category-share > div { height: 100%; border-radius: 2px; }
+.category-total { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 16px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.category-total strong { font-size: 14px; }
+.category-tooltip { padding: 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; overflow-wrap: anywhere; }
+.category-tooltip > p { margin: 0 0 7px; }
+.category-tooltip > div { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px 16px; }
+.category-tooltip > div p { display: grid; gap: 3px; margin: 0; }
+.quota-categories :focus-visible { outline: 2px solid #80b7ff; outline-offset: 3px; }
+@media (max-width: 1050px) { .category-grid, .category-tooltip > div { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .category-grid, .category-tooltip > div { grid-template-columns: minmax(0, 1fr); } }

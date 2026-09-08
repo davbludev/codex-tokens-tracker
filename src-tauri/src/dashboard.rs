@@ -70,6 +70,20 @@ pub struct QuotaInterval {
     pub consumed_percentage_points: String,
     pub tokens: aggregates::Tokens,
     pub hypotheses: Vec<QuotaHypothesis>,
+    pub categories: QuotaCategoryCosts,
+}
+
+/// Estimated token cost of the interval split by category, each observation
+/// at its own model's preserved price version. Exact integer trillionths of
+/// USD; every amount is absent if any usage in the interval is unpriced.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaCategoryCosts {
+    pub input: Option<String>,
+    pub cached_input: Option<String>,
+    pub cache_writes: Option<String>,
+    pub output: Option<String>,
+    pub reason: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize)]

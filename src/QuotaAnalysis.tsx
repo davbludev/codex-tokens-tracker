@@ -2,15 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import uPlot from "uplot";
 import type { QuotaAnalysis as Analysis } from "./dashboard-types";
 import { exactTime } from "./dashboard-data";
-import { combinations, combinationStats, perPercent, sample, type WriteInterpretation } from "./quota-combinations";
+import { combinations, combinationStats, formatted, perPercent, sample, type WriteInterpretation } from "./quota-combinations";
 import "./quota-analysis.css";
 
-function formatted(value: string | null, money = false) {
-  if (value === null) return "Unavailable";
-  const [whole, fraction] = value.split(".");
-  const separator = (1.1).toLocaleString().replace(/\d/g, "");
-  return (money ? "$" : "") + BigInt(whole).toLocaleString() + separator + fraction;
-}
 export function QuotaAnalysis({ analysis }: { analysis: Analysis }) {
   const [writes, setWrites] = useState<WriteInterpretation>("additional");
   const [selected, setSelected] = useState(combinations.map(c => c.mask));

@@ -141,7 +141,11 @@ impl Rates {
             })
     }
 
-    pub fn value(&self, tokens: &Tokens) -> Result<i128, Error> {
+    /// Exact amounts for [input, cached input, cache writes, output] under this
+    /// version's policies. Output includes reasoning, separately priced or not.
+    /// `value` is their checked sum, so categories always add up to the
+    /// stored valuation.
+    pub fn breakdown(&self, tokens: &Tokens) -> Result<[i128; 4], Error> {
         let values = tokens.values().ok_or(Error::MissingCategories)?;
         let [input, cached, writes, output, reasoning, _total] = values;
         if values.iter().any(|n| *n < 0) || cached > input || reasoning > output {
@@ -163,19 +167,26 @@ impl Rates {
             ReasoningPolicy::Separate => (output - reasoning, reasoning),
             _ => (output, 0),
         };
-        [
-            (ordinary_input, self.input),
-            (cached, self.cached_input),
-            (writes, self.cache_write),
-            (ordinary_output, self.output),
-            (separate_reasoning, self.reasoning),
-        ]
-        .into_iter()
-        .try_fold(0i128, |sum, (tokens, rate)| {
+        let amount = |tokens: i64, rate: i64| {
             i128::from(tokens)
                 .checked_mul(i128::from(rate))
-                .and_then(|amount| sum.checked_add(amount))
                 .ok_or(Error::Overflow)
-        })
+        };
+        Ok([
+            amount(ordinary_input, self.input)?,
+            amount(cached, self.cached_input)?,
+            amount(writes, self.cache_write)?,
+            amount(ordinary_output, self.output)?
+                .checked_add(amount(separate_reasoning, self.reasoning)?)
+                .ok_or(Error::Overflow)?,
+        ])
+    }
+
+    pub fn value(&self, tokens: &Tokens) -> Result<i128, Error> {
+        self.breakdown(tokens)?
+            .into_iter()
+            .try_fold(0i128, |sum, amount| {
+                sum.checked_add(amount).ok_or(Error::Overflow)
+            })
     }
 }

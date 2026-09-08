@@ -115,7 +115,9 @@ export type DashboardResponse = {
 };
 
 export type QuotaHypothesis = { mask: number; writesIncluded: boolean; tokens: string | null; estimatedUsd: string | null; tokenReason: string | null; priceReason: string | null };
-export type QuotaInterval = { start: ObservationTime; end: ObservationTime; consumedPercentagePoints: string; tokens: GlobalSummary["tokens"]; hypotheses: QuotaHypothesis[] };
+/** Exact integer trillionths of USD per category at each observation's own model price; all null when any usage is unpriced. */
+export type QuotaCategoryCosts = { input: string | null; cachedInput: string | null; cacheWrites: string | null; output: string | null; reason: string | null };
+export type QuotaInterval = { start: ObservationTime; end: ObservationTime; consumedPercentagePoints: string; tokens: GlobalSummary["tokens"]; hypotheses: QuotaHypothesis[]; categories: QuotaCategoryCosts };
 export type QuotaAnalysis = { intervals: QuotaInterval[]; totalIntervals: number };
 
 export type LocalUsageSummary = Pick<GlobalSummary, "tokens" | "estimatedCost" | "observedSessions">;

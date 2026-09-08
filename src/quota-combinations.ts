@@ -6,6 +6,13 @@ const names = ["Baseline", "+ Cache read", "+ Cache write", "+ Cache read + writ
 const colors = ["#80b7ff", "#65d8ad", "#edbe74", "#c1a0ff", "#ef94ac", "#86dce5", "#e9e38a", "#f6a476"];
 export const combinations = [0, 1, 2, 4, 3, 5, 6, 7].map(mask => ({ mask, name: names[mask], color: colors[mask], components: ["Input", "Output", ...optional.filter((_, bit) => mask & (1 << bit))] }));
 
+/** Locale-grouped exact decimal string; null means unavailable. */
+export function formatted(value: string | null, money = false) {
+  if (value === null) return "Unavailable";
+  const [whole, fraction] = value.split(".");
+  const separator = (1.1).toLocaleString().replace(/\d/g, "");
+  return (money ? "$" : "") + BigInt(whole).toLocaleString() + separator + fraction;
+}
 export function sample(interval: QuotaInterval, mask: number, writes: WriteInterpretation) {
   return interval.hypotheses.find(h => h.mask === mask && h.writesIncluded === (writes === "included"));
 }
@@ -16,7 +23,8 @@ function decimalParts(value: string): { integer: bigint; scale: number } {
   const integer = BigInt(whole + fraction);
   return scale < 0 ? { integer: integer * 10n ** BigInt(-scale), scale: 0 } : { integer, scale };
 }
-function sumPercentages(values: string[]): string {
+/** Exact decimal sum of percentage-point strings, as `<integer>e-<scale>`. */
+export function sumPercentages(values: string[]): string {
   const parts = values.map(decimalParts);
   const scale = Math.max(0, ...parts.map(p => p.scale));
   return `${parts.reduce((total, p) => total + p.integer * 10n ** BigInt(scale - p.scale), 0n)}e-${scale}`;

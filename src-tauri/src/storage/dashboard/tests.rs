@@ -1116,3 +1116,69 @@ fn quota_hypotheses_apply_the_bounded_reach_back_before_valuation_persists() {
     assert!(store.observation_valuation(2).unwrap().is_none());
     expected(&mut store);
 }
+
+#[test]
+fn quota_category_costs_use_each_observations_model_price_or_stay_unavailable() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&temp.path().join("categories.sqlite")).unwrap();
+    limit(&mut store, "2026-01-01T00:00:00Z", "10");
+    local_usage(
+        &mut store,
+        "first",
+        Some("2026-01-01T00:01:00Z"),
+        Some("priced"),
+        1_000_000,
+        None,
+        None,
+    );
+    local_usage(
+        &mut store,
+        "second",
+        Some("2026-01-01T00:02:00Z"),
+        Some("other"),
+        2_000_000,
+        None,
+        None,
+    );
+    limit(&mut store, "2026-01-01T00:03:00Z", "12");
+    price(&mut store);
+    let partial = read(&mut store, "2026-01-01T00:03:00Z", Range::All);
+    let categories = &partial.quota_analysis.intervals[0].categories;
+    assert!(categories.input.is_none() && categories.output.is_none());
+    assert_eq!(
+        categories.reason,
+        Some("Unpriced usage: no applicable model price")
+    );
+    store
+        .save_model_price_at(
+            "other",
+            PriceInput {
+                input: "3".into(),
+                cached_input: "3".into(),
+                cache_write: "3".into(),
+                output: "3".into(),
+                reasoning: None,
+                reasoning_policy: ReasoningPolicy::Included,
+                cache_write_policy: CacheWritePolicy::Additional,
+            },
+            true,
+            (0, 1),
+        )
+        .unwrap();
+    while store.pricing_work_pending().unwrap() {
+        store.process_pricing_work().unwrap();
+    }
+    let complete = read(&mut store, "2026-01-01T00:03:00Z", Range::All);
+    let categories = &complete.quota_analysis.intervals[0].categories;
+    // 1M input at $1 plus 2M input at $3: each observation at its own price.
+    assert_eq!(
+        [
+            categories.input.as_deref(),
+            categories.cached_input.as_deref(),
+            categories.cache_writes.as_deref(),
+            categories.output.as_deref(),
+            categories.reason,
+        ],
+        [Some("7000000000000"), Some("0"), Some("0"), Some("0"), None]
+    );
+}

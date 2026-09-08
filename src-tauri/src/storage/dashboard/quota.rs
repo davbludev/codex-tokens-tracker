@@ -1,4 +1,5 @@
 //! Disjoint quota intervals with per-observation, version-aware hypothesis prices.
+mod categories;
 mod hypotheses;
 use crate::{
     aggregates::{Category, Tokens},
@@ -21,6 +22,7 @@ struct Totals {
     missing: [bool; 6],
     observed: bool,
     hypotheses: hypotheses::Hypotheses,
+    categories: categories::Categories,
 }
 impl Totals {
     fn add(&mut self, tokens: Tokens) -> Result<(), ReadError> {
@@ -105,6 +107,7 @@ pub(super) fn read(
             if continues {
                 totals.add(tokens)?;
                 totals.hypotheses.add(&usage, rates.as_ref());
+                totals.categories.add(&usage, rates.as_ref());
             }
             next = next_tokens(&mut rows)?;
         }
@@ -124,6 +127,7 @@ pub(super) fn read(
                 consumed_percentage_points: decimal(&consumed),
                 tokens: totals.finish(),
                 hypotheses: totals.hypotheses.finish(),
+                categories: totals.categories.finish(),
             });
             total_intervals += 1;
             if intervals.len() > MAX_INTERVALS {

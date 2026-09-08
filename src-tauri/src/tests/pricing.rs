@@ -837,3 +837,34 @@ fn pricing_v6_migration_seeds_surviving_names_and_unknown_is_separate() {
     assert!(store.observation_valuation(id).unwrap().is_none());
     assert_eq!(store.pricing_models(None).unwrap().len(), 2);
 }
+
+#[test]
+fn pricing_breakdown_categories_add_up_to_the_valuation_under_every_policy() {
+    let usage = tokens([100, 20, 10, 50, 15, 150]);
+    let mut input = prices();
+    input.input = "2".into();
+    input.cache_write = "3".into();
+    input.output = "4".into();
+    input.cache_write_policy = CacheWritePolicy::Additional;
+    let additional = input.validate().unwrap();
+    // (100-20)*2, 20*0.5, 10*3, 50*4 in micro-USD per million tokens.
+    assert_eq!(
+        additional.breakdown(&usage).unwrap(),
+        [160_000_000, 10_000_000, 30_000_000, 200_000_000]
+    );
+    input.cache_write_policy = CacheWritePolicy::IncludedInputDisjoint;
+    input.reasoning_policy = ReasoningPolicy::Separate;
+    input.reasoning = Some("6".into());
+    let disjoint = input.validate().unwrap();
+    // (100-20-10)*2 input; output (50-15)*4 plus reasoning 15*6.
+    assert_eq!(
+        disjoint.breakdown(&usage).unwrap(),
+        [140_000_000, 10_000_000, 30_000_000, 230_000_000]
+    );
+    for rates in [additional, disjoint] {
+        assert_eq!(
+            rates.breakdown(&usage).unwrap().iter().sum::<i128>(),
+            rates.value(&usage).unwrap()
+        );
+    }
+}
