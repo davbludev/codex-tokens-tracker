@@ -12,7 +12,7 @@
 
 ## Desktop settings delivery
 - Owner: `src-tauri/src/commands/settings.rs`; companion: `src-tauri/src/commands.rs`.
-- Responsibility: Prepare replacement source watches before saving and switching, expose diagnostics, and dispatch background CSV work.
+- Responsibility: Prepare replacement source watches before saving and switching, expose diagnostics, and admit/drain background CSV work through shutdown.
 - Look here when: Changing live source switching or settings/export commands.
 
 ## CSV reports
@@ -22,5 +22,5 @@
 
 ## Settings interface
 - Owner: `src/Settings.tsx`; transport: `src/settings-data.ts`; stylesheet: `src/settings.css`; checks: `tests/settings-ui.mjs`.
-- Responsibility: Edit source and future tray preferences, open pricing, inspect diagnostics, and request CSV exports with accessible outcomes.
+- Responsibility: Edit source and active startup/tray preferences, open pricing, inspect diagnostics, and request CSV exports with accessible outcomes.
 - Look here when: Changing Settings workflows or frontend command contracts.

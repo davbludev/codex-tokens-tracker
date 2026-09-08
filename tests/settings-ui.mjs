@@ -64,7 +64,6 @@ try {
   await save.waitFor();
   assert.equal(await navigation.getAttribute("aria-pressed"), "true");
   assert.match(await settings.innerText(), /8,192 bytes[\s\S]*42[\s\S]*1,234/);
-  assert.match(await settings.innerText(), /These preferences are saved only/);
   assert.equal(await settings.getByText(/sampling/i).count(), 0);
   await settings.getByRole("button", { name: "Configure model prices" }).click();
   await page.getByRole("dialog", { name: "Model Pricing" }).waitFor();
@@ -86,7 +85,7 @@ try {
   assert.doesNotMatch(await settings.innerText(), /Do not reveal arbitrary backend error content/);
   await directory.fill("D:\\Codex history");
   await settings.getByText("Start when I sign in", { exact: true }).click();
-  await settings.getByText("Close window to tray", { exact: true }).click();
+  await settings.getByText("Minimize or close window to tray", { exact: true }).click();
   await page.evaluate(() => { const s = window.settingsTest; s.saveError = null; s.hold = true; });
   await save.click();
   await page.waitForFunction(() => window.settingsTest.releases.length === 1);
@@ -100,8 +99,8 @@ try {
   assert.equal(await directory.inputValue(), "D:\\Codex history");
   assert.equal(await settings.getByRole("checkbox", { name: /Start when I sign in/ }).isChecked(), true);
   await settings.getByText("Enable system tray", { exact: true }).click();
-  assert.equal(await settings.getByRole("checkbox", { name: /Close window to tray/ }).isChecked(), false);
-  assert.equal(await settings.getByRole("checkbox", { name: /Close window to tray/ }).isDisabled(), true);
+  assert.equal(await settings.getByRole("checkbox", { name: /Minimize or close window to tray/ }).isChecked(), false);
+  assert.equal(await settings.getByRole("checkbox", { name: /Minimize or close window to tray/ }).isDisabled(), true);
   await settings.getByRole("radio", { name: /Discover automatically/ }).check(); await save.click();
   await settings.getByRole("status").filter({ hasText: "Settings saved." }).waitFor();
   assert.equal(await page.evaluate(() => window.settingsTest.settings.codex_directory_override), null);

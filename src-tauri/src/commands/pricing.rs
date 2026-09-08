@@ -12,6 +12,7 @@ use serde::Serialize;
 use std::sync::mpsc;
 
 pub(crate) enum Message {
+    Wake,
     Source(notify::Result<notify::Event>),
     Pricing(Request),
     Settings(super::settings::Request),

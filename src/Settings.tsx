@@ -126,7 +126,7 @@ export function Settings({ onOpenPricing }: { onOpenPricing: () => void }) {
     try {
       const settings = await saveSettings({ codex_directory_override: customDirectory ? path : null, autostart: draft.autostart, tray_enabled: draft.tray_enabled, close_to_tray: draft.tray_enabled && draft.close_to_tray });
       setSaved(settings); setDraft(settings); setDirectory(settings.codex_directory_override ?? ""); setCustomDirectory(settings.codex_directory_override !== null);
-      setRevision(value => value + 1); setStatus("Settings saved. The monitor uses the selected Codex home. Startup and tray preferences are saved for a future release.");
+      setRevision(value => value + 1); setStatus("Settings saved. The monitor uses the selected Codex home. Startup and tray preferences are active.");
     } catch (error) {
       const problem = settingsError(error);
       if (problem.code === "invalid_directory") { setDirectoryError(problem.message); directoryInput.current?.focus(); }
@@ -155,11 +155,11 @@ export function Settings({ onOpenPricing }: { onOpenPricing: () => void }) {
       </fieldset>
       <fieldset className="settings-section" disabled={saving} aria-describedby="startup-help">
         <legend>Startup & tray preferences</legend>
-        <p id="startup-help">These preferences are saved only. Automatic startup, tray controls, and closing to the tray will become available with desktop integration in a future release.</p>
+        <p id="startup-help">Start the tracker at sign-in, control monitoring from the system tray, and keep it running when you close its window.</p>
         <div className="settings-preferences">
-          <label className="settings-option"><input type="checkbox" checked={draft.autostart} onChange={event => updatePreference("autostart", event.target.checked)} /><span><strong>Start when I sign in</strong><small>Future preference</small></span></label>
-          <label className="settings-option"><input type="checkbox" checked={draft.tray_enabled} onChange={event => updatePreference("tray_enabled", event.target.checked)} /><span><strong>Enable system tray</strong><small>Future preference</small></span></label>
-          <label className={`settings-option${!draft.tray_enabled ? " settings-option-disabled" : ""}`}><input type="checkbox" checked={draft.close_to_tray} disabled={!draft.tray_enabled} onChange={event => updatePreference("close_to_tray", event.target.checked)} /><span><strong>Close window to tray</strong><small>Requires the system tray preference</small></span></label>
+          <label className="settings-option"><input type="checkbox" checked={draft.autostart} onChange={event => updatePreference("autostart", event.target.checked)} /><span><strong>Start when I sign in</strong><small>Launch the tracker automatically when you sign in to Windows.</small></span></label>
+          <label className="settings-option"><input type="checkbox" checked={draft.tray_enabled} onChange={event => updatePreference("tray_enabled", event.target.checked)} /><span><strong>Enable system tray</strong><small>Open the tracker, pause or resume monitoring, or exit from the tray menu.</small></span></label>
+          <label className={`settings-option${!draft.tray_enabled ? " settings-option-disabled" : ""}`}><input type="checkbox" checked={draft.close_to_tray} disabled={!draft.tray_enabled} onChange={event => updatePreference("close_to_tray", event.target.checked)} /><span><strong>Minimize or close window to tray</strong><small>Keep monitoring when the window is minimized or closed. Requires the system tray.</small></span></label>
         </div>
       </fieldset>
       {failure && <p className="field-error" role="alert">{failure}</p>}

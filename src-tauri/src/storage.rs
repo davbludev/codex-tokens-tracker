@@ -81,6 +81,17 @@ pub const MAX_BATCH_LINES: usize = 64;
 const PROMOTION_LIMIT: usize = 32;
 
 impl Store {
+    /// Flush committed WAL pages and release the sole writer without draining durable jobs.
+    pub fn close(self) -> Result<()> {
+        let checkpoint = self
+            .connection
+            .execute_batch("PRAGMA wal_checkpoint(PASSIVE)");
+        let close = self.connection.close().map_err(|(_, error)| error);
+        checkpoint?;
+        close?;
+        Ok(())
+    }
+
     #[cfg(test)]
     pub fn connection(&self) -> &Connection {
         &self.connection

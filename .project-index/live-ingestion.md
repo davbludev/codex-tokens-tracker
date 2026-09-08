@@ -36,6 +36,6 @@
 - Look here when: Changing the desktop app shell or pricing entry point.
 
 ## Ingestion checks
-- Owner: `src-tauri/src/tests.rs`.
+- Owner: `src-tauri/src/tests.rs`; companion: `src-tauri/src/commands/monitoring/tests.rs`.
 - Responsibility: Accounting, chronology, migration, privacy, atomic checkpoints, recovery, import/live scheduling, and native missing-directory/append checks.
 - Look here when: Verifying the supported ingestion boundary.

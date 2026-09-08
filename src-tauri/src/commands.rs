@@ -1,3 +1,4 @@
+pub(crate) mod monitoring;
 pub(crate) mod pricing;
 pub(crate) mod runtime;
 pub(crate) mod settings;
@@ -92,11 +93,22 @@ pub async fn usage_dashboard(
         .map_err(|_| crate::weekly::ReadError::Storage)?
 }
 
-fn publish(app: &tauri::AppHandle, snapshot: Snapshot) {
+fn publish(app: &tauri::AppHandle, mut snapshot: Snapshot) {
+    if snapshot.diagnostic.is_none() {
+        snapshot.diagnostic = app
+            .state::<crate::desktop::Runtime>()
+            .diagnostic
+            .lock()
+            .ok()
+            .and_then(|value| value.clone());
+    }
     if let Ok(mut current) = app.state::<State>().0.lock() {
         *current = snapshot.clone();
     }
     let _ = app.emit("usage-updated", snapshot);
+    if let Ok(path) = app.path().app_data_dir() {
+        crate::desktop::refresh(app, path.join("usage.sqlite"));
+    }
 }
 
 fn failure(app: &tauri::AppHandle, message: &str) {
@@ -249,10 +261,15 @@ impl NativeWatch {
 
 pub fn start(app: tauri::AppHandle, database: PathBuf, receive: mpsc::Receiver<pricing::Message>) {
     std::thread::spawn(move || {
+        let runtime = app.state::<monitoring::Runtime>();
         let mut store = match Store::open(&database) {
             Ok(store) => store,
             Err(error) => {
                 failure(&app, &error.to_string());
+                runtime.mark_finished();
+                if runtime.is_stopping() {
+                    monitoring::request_exit(&app);
+                }
                 return;
             }
         };
@@ -261,14 +278,21 @@ pub fn start(app: tauri::AppHandle, database: PathBuf, receive: mpsc::Receiver<p
         let mut first = None;
         let mut dirty = true;
         let mut published = Instant::now() - Duration::from_millis(100);
-        loop {
+        'writer: loop {
+            if runtime.is_stopping() {
+                break;
+            }
             let events: Vec<_> = first
                 .take()
                 .into_iter()
                 .chain(receive.try_iter().take(255))
                 .collect();
             for event in events {
+                if runtime.is_stopping() {
+                    break 'writer;
+                }
                 match event {
+                    pricing::Message::Wake => (),
                     pricing::Message::Source(event) => {
                         if let Some(native) = &mut native {
                             dirty |= native.accept(&mut work, event, Instant::now());
@@ -284,6 +308,7 @@ pub fn start(app: tauri::AppHandle, database: PathBuf, receive: mpsc::Receiver<p
                             &mut work,
                             &mut native,
                             &control,
+                            &crate::desktop::NativePlatform::new(app.clone()),
                         );
                         if let Ok(view) = &result {
                             settings::publish(&app, view.clone());
@@ -296,11 +321,14 @@ pub fn start(app: tauri::AppHandle, database: PathBuf, receive: mpsc::Receiver<p
             if let Some(native) = &mut native {
                 dirty |= native.recover_overflow(&mut work);
             }
-            match work.step(&mut store, Instant::now()) {
+            if runtime.is_stopping() {
+                break;
+            }
+            match runtime.step(&mut work, &mut store, Instant::now()) {
                 Ok(changed) => dirty |= changed,
                 Err(error) => {
                     failure(&app, &error.to_string());
-                    return;
+                    break;
                 }
             }
             if dirty && published.elapsed() >= Duration::from_millis(100) {
@@ -315,11 +343,14 @@ pub fn start(app: tauri::AppHandle, database: PathBuf, receive: mpsc::Receiver<p
                     }
                     Err(error) => {
                         failure(&app, &error.to_string());
-                        return;
+                        break;
                     }
                 }
                 published = Instant::now();
                 dirty = false;
+            }
+            if runtime.is_stopping() {
+                break;
             }
             if work.busy() {
                 continue;
@@ -337,7 +368,7 @@ pub fn start(app: tauri::AppHandle, database: PathBuf, receive: mpsc::Receiver<p
                         Err(mpsc::RecvTimeoutError::Timeout) => None,
                         Err(mpsc::RecvTimeoutError::Disconnected) => {
                             failure(&app, "Native source watcher stopped");
-                            return;
+                            break;
                         }
                     }
                 }
@@ -345,10 +376,21 @@ pub fn start(app: tauri::AppHandle, database: PathBuf, receive: mpsc::Receiver<p
                     Ok(event) => Some(event),
                     Err(_) => {
                         failure(&app, "Native source watcher stopped");
-                        return;
+                        break;
                     }
                 },
             };
+        }
+        drop(native);
+        if runtime.is_stopping() {
+            app.state::<settings::ExportState>().wait_for_idle();
+        }
+        let closed = store.close();
+        runtime.mark_finished();
+        if closed.is_err() {
+            failure(&app, "The local database could not be checkpointed cleanly. Committed usage is retained; close the app again to exit.");
+        } else if runtime.is_stopping() {
+            app.exit(0);
         }
     });
 }

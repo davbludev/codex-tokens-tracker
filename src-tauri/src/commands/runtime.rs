@@ -16,6 +16,7 @@ const QUEUE_LIMIT: usize = 512;
 /// Only concrete source events schedule recovery; an idle coordinator has no work.
 pub struct Work {
     pub roots: Vec<PathBuf>,
+    paused: bool,
     discovery: VecDeque<Discovery>,
     reads: VecDeque<PathBuf>,
     queued: HashSet<PathBuf>,
@@ -58,6 +59,7 @@ impl Work {
                 VecDeque::from([Discovery::new(roots.clone())])
             },
             roots,
+            paused: false,
             reads: VecDeque::new(),
             queued: HashSet::new(),
             debounce: HashMap::new(),
@@ -90,6 +92,12 @@ impl Work {
     /// The writer calls this after saving a price; startup also resumes durable jobs.
     pub fn request_pricing(&mut self) {
         self.pricing = true;
+    }
+
+    pub fn set_paused(&mut self, paused: bool) -> bool {
+        let changed = self.paused != paused;
+        self.paused = paused;
+        changed
     }
 
     fn enqueue(&mut self, path: PathBuf) {
@@ -149,21 +157,27 @@ impl Work {
     }
 
     pub fn deadline(&self) -> Option<Instant> {
+        if self.paused {
+            return None;
+        }
         self.debounce.values().copied().min()
     }
 
     pub fn busy(&self) -> bool {
-        !self.discovery.is_empty()
-            || !self.reads.is_empty()
-            || self.reconcile
-            || self.pricing
-            || self.recovery
-            || self.sweep.is_some()
-            || self.sweep_requested
+        !self.paused
+            && (!self.discovery.is_empty()
+                || !self.reads.is_empty()
+                || self.reconcile
+                || self.pricing
+                || self.recovery
+                || self.sweep.is_some()
+                || self.sweep_requested)
     }
 
     pub fn progress(&self) -> String {
-        let phase = if self.busy() {
+        let phase = if self.paused {
+            "Monitoring paused"
+        } else if self.busy() {
             "Importing / recovering history"
         } else if self.roots.iter().any(|path| path.is_dir()) {
             "Live monitoring"
@@ -179,6 +193,9 @@ impl Work {
     }
 
     pub fn step(&mut self, store: &mut Store, now: Instant) -> Result<bool> {
+        if self.paused {
+            return Ok(false);
+        }
         let due: Vec<_> = self
             .debounce
             .iter()

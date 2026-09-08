@@ -6,6 +6,39 @@ use std::{
 
 const ACTIVE: &str = include_str!("../../../../fixtures/codex/active-root.jsonl");
 
+struct SourceOnlyPlatform;
+impl crate::desktop::Platform for SourceOnlyPlatform {
+    fn autostart_enabled(&self) -> Result<bool, Error> {
+        Ok(false)
+    }
+    fn tray_enabled(&self) -> bool {
+        false
+    }
+    fn set_autostart(&self, _: bool) -> Result<(), Error> {
+        panic!("source-only settings changed autostart")
+    }
+    fn set_tray(&self, _: bool) -> Result<(), Error> {
+        panic!("source-only settings changed the tray")
+    }
+}
+
+fn apply(
+    configuration: Config,
+    store: &mut Store,
+    work: &mut Work,
+    native: &mut Option<NativeWatch>,
+    control: &pricing::Control,
+) -> Result<View, Error> {
+    super::apply(
+        configuration,
+        store,
+        work,
+        native,
+        control,
+        &SourceOnlyPlatform,
+    )
+}
+
 fn drain(work: &mut Work, store: &mut Store) {
     for _ in 0..2000 {
         if !work
@@ -188,4 +221,52 @@ fn settings_failed_switch_leaves_saved_directory_and_active_work_intact() {
         Some("26587")
     );
     assert!(native.is_some());
+}
+
+#[test]
+fn shutdown_waits_for_csv_completion_and_rejects_new_exports() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = temp.path().join("usage.sqlite");
+    Store::open(&database).unwrap().close().unwrap();
+    let destination = temp.path().join("sessions.csv");
+    let exports = ExportState::default();
+    let permit = exports.begin().unwrap();
+    let (release, proceed) = mpsc::channel();
+    let worker_destination = destination.clone();
+    let worker = std::thread::spawn(move || {
+        let _permit = permit;
+        proceed.recv_timeout(Duration::from_secs(5)).unwrap();
+        crate::export::export_csv(
+            &database,
+            crate::export::Request {
+                kind: crate::export::Kind::Sessions,
+                destination: worker_destination.to_string_lossy().into_owned(),
+            },
+        )
+        .unwrap()
+    });
+
+    exports.begin_shutdown();
+    assert!(!exports.is_idle());
+    assert!(matches!(exports.begin(), Err(crate::export::Error::Busy)));
+    let waiting = exports.clone();
+    let (finished, completion) = mpsc::channel();
+    let waiter = std::thread::spawn(move || {
+        waiting.wait_for_idle();
+        finished.send(()).unwrap();
+    });
+    // The export is deliberately held before its write; shutdown must stay pending.
+    assert!(matches!(
+        completion.recv_timeout(Duration::from_millis(100)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    release.send(()).unwrap();
+    completion.recv_timeout(Duration::from_secs(5)).unwrap();
+    waiter.join().unwrap();
+    assert_eq!(worker.join().unwrap().row_count, 0);
+    let csv = fs::read_to_string(destination).unwrap();
+    assert!(csv.starts_with("session_id,"));
+    assert!(csv.ends_with("estimated_cost_state,coverage_note\r\n"));
+    assert!(exports.is_idle());
+    assert!(matches!(exports.begin(), Err(crate::export::Error::Busy)));
 }

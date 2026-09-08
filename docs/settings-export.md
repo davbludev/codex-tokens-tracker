@@ -9,9 +9,9 @@ remain in the same database; returning to a directory or importing copied record
 does not add the same accepted usage again. A saved source that temporarily
 disappears remains selected and can recover through the existing parent watch.
 
-Model Pricing opens the existing price editor. Autostart, tray, and close-to-tray
-choices are persisted preferences for #14; they do not activate those features yet.
-No sampling or persistent chart cache is added.
+Model Pricing opens the existing price editor. Startup and tray preferences apply
+when saved and are restored when the tracker starts. All three default to off.
+See [desktop monitoring](desktop-monitoring.md) for tray actions and startup behavior.
 
 Diagnostics reports the SQLite database path, combined database and WAL size in
 bytes, observed session count excluding missing-parent placeholders, normalized

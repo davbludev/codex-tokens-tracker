@@ -6,24 +6,85 @@ use crate::{
 };
 use std::{
     path::Path,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        mpsc, Arc, Mutex,
-    },
+    sync::{mpsc, Arc, Condvar, Mutex},
 };
 use tauri::Manager;
 
 #[derive(Default)]
 pub struct Runtime(pub Mutex<Option<View>>);
 
-#[derive(Default)]
-pub struct ExportState(Arc<AtomicBool>);
+#[derive(Clone, Default)]
+pub struct ExportState(Arc<ExportActivity>);
 
-struct ExportPermit(Arc<AtomicBool>);
+#[derive(Default)]
+struct ExportActivity {
+    status: Mutex<ExportStatus>,
+    idle: Condvar,
+}
+
+#[derive(Default)]
+struct ExportStatus {
+    running: bool,
+    closing: bool,
+}
+
+struct ExportPermit(Arc<ExportActivity>);
+
+impl ExportState {
+    fn begin(&self) -> Result<ExportPermit, crate::export::Error> {
+        let mut status = self
+            .0
+            .status
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if status.running || status.closing {
+            return Err(crate::export::Error::Busy);
+        }
+        status.running = true;
+        Ok(ExportPermit(self.0.clone()))
+    }
+
+    pub(crate) fn begin_shutdown(&self) {
+        self.0
+            .status
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .closing = true;
+    }
+
+    pub(crate) fn is_idle(&self) -> bool {
+        !self
+            .0
+            .status
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .running
+    }
+
+    /// Only block a shutdown worker; the main event loop remains responsive.
+    pub(crate) fn wait_for_idle(&self) {
+        let status = self
+            .0
+            .status
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        drop(
+            self.0
+                .idle
+                .wait_while(status, |status| status.running)
+                .unwrap_or_else(|error| error.into_inner()),
+        );
+    }
+}
 
 impl Drop for ExportPermit {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
+        self.0
+            .status
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .running = false;
+        self.0.idle.notify_all();
     }
 }
 
@@ -33,6 +94,9 @@ pub(crate) struct Request {
 }
 
 pub(crate) fn publish(app: &tauri::AppHandle, view: View) {
+    if let Ok(mut diagnostic) = app.state::<crate::desktop::Runtime>().diagnostic.lock() {
+        *diagnostic = None;
+    }
     if let Ok(mut current) = app.state::<Runtime>().0.lock() {
         *current = Some(view);
     }
@@ -59,8 +123,17 @@ pub(crate) fn initialize(
         .and_then(settings::resolve);
     match resolved {
         Ok((view, home)) => {
+            let desktop_error = crate::desktop::save_preferences(
+                &crate::desktop::NativePlatform::new(app.clone()),
+                &view.config,
+                || Ok(()),
+            )
+            .err();
             publish(app, view);
-            match home {
+            if let Ok(mut diagnostic) = app.state::<crate::desktop::Runtime>().diagnostic.lock() {
+                *diagnostic = desktop_error.map(|error| error.message);
+            }
+            let (native, work) = match home {
                 Some(home) => {
                     // Subscribe before creating the initial discovery iterator.
                     match subscribe(&home, control) {
@@ -82,7 +155,8 @@ pub(crate) fn initialize(
                     );
                     (None, work)
                 }
-            }
+            };
+            (native, work)
         }
         Err(_) => {
             let mut work = Work::without_sources();
@@ -101,6 +175,7 @@ pub(crate) fn apply(
     work: &mut Work,
     native: &mut Option<NativeWatch>,
     control: &pricing::Control,
+    platform: &impl crate::desktop::Platform,
 ) -> Result<View, Error> {
     if let Some(path) = configuration.codex_directory_override.as_deref() {
         configuration.codex_directory_override = Some(settings::validate_override(path)?);
@@ -121,9 +196,11 @@ pub(crate) fn apply(
     } else {
         None
     };
-    store
-        .save_tracker_settings(&configuration)
-        .map_err(|_| Error::storage())?;
+    crate::desktop::save_preferences(platform, &configuration, || {
+        store
+            .save_tracker_settings(&configuration)
+            .map_err(|_| Error::storage())
+    })?;
     if switching {
         *native = replacement;
         *work = home
@@ -198,11 +275,7 @@ pub async fn export_usage_csv(
         .app_data_dir()
         .map_err(|_| crate::export::Error::Storage)?
         .join("usage.sqlite");
-    exports
-        .0
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .map_err(|_| crate::export::Error::Busy)?;
-    let permit = ExportPermit(exports.0.clone());
+    let permit = exports.begin()?;
     tauri::async_runtime::spawn_blocking(move || {
         let _permit = permit;
         crate::export::export_csv(&path, request)
