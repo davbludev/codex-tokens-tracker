@@ -3,10 +3,12 @@ mod adapter;
 mod aggregates;
 mod commands;
 mod dashboard;
+mod export;
 mod hierarchy;
 mod identity;
 mod identity_filesystem;
 mod pricing;
+mod settings;
 mod source;
 mod storage;
 mod weekly;
@@ -17,6 +19,8 @@ pub fn run() {
     let (pricing_control, pricing_inbox) = commands::pricing::channel();
     tauri::Builder::default()
         .manage(pricing_control)
+        .manage(commands::settings::Runtime::default())
+        .manage(commands::settings::ExportState::default())
         .manage(commands::State(std::sync::Mutex::new(storage::Snapshot {
             coverage: "Discovering local Codex usage…".into(),
             ..Default::default()
@@ -28,7 +32,11 @@ pub fn run() {
             commands::usage_weekly_models,
             commands::usage_dashboard,
             commands::pricing::pricing_models,
-            commands::pricing::save_model_price
+            commands::pricing::save_model_price,
+            commands::settings::tracker_settings,
+            commands::settings::save_tracker_settings,
+            commands::settings::tracker_diagnostics,
+            commands::settings::export_usage_csv
         ])
         .setup(move |app| {
             match app.path().app_data_dir().and_then(|directory| {

@@ -10,7 +10,7 @@ mod analytics;
 mod session_detail;
 mod session_list;
 
-const PROJECTS: &str = "project_sessions AS (
+pub(crate) const PROJECTS: &str = "project_sessions AS (
  SELECT s.*,
  CASE WHEN is_placeholder=0 AND repository_state='confirmed' AND repository_common_directory IS NOT NULL
       THEN 'repository:' || repository_common_directory
@@ -177,7 +177,7 @@ fn summary_with_params(
     summary_from_cte(tx, &cte, parameters)
 }
 
-pub(super) fn token_fields() -> String {
+pub(crate) fn token_fields() -> String {
     // json_extract operates only on the durable allowlisted projection. No observation
     // list or normalized JSON is loaded into Rust or sent across IPC.
     let categories = [
@@ -195,7 +195,7 @@ pub(super) fn token_fields() -> String {
         .join(",")
 }
 
-pub(super) fn row_tokens(
+pub(crate) fn row_tokens(
     row: &rusqlite::Row<'_>,
     offset: usize,
     accepted: i64,
@@ -274,7 +274,7 @@ fn summary_from_cte(
 
 /// SQLite's numeric SUM would coerce durable i128 TEXT values to i64 or float.
 /// Keep a single checked accumulator inside the query and return only its string.
-pub(super) struct CostSum;
+pub(crate) struct CostSum;
 impl Aggregate<Option<i128>, Option<String>> for CostSum {
     fn init(&self, _: &mut Context<'_>) -> rusqlite::Result<Option<i128>> {
         Ok(None)
@@ -307,7 +307,7 @@ impl Aggregate<Option<i128>, Option<String>> for CostSum {
     }
 }
 
-fn attribution(id: String) -> dto::Attribution {
+pub(crate) fn attribution(id: String) -> dto::Attribution {
     let (basis, value) = match id.split_once(':') {
         Some(("repository", value)) => ("confirmedRepository", Some(value.to_owned())),
         Some(("location", value)) => ("locationDerived", Some(value.to_owned())),

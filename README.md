@@ -24,6 +24,11 @@ shows discovered files, read batches, and queued files. SQLite lives in Tauri's 
 data directory. The monitor makes no external API calls and retains no prompts,
 messages, or raw-log copies.
 
+Use **Settings** to override the discovered Codex home, open Model Pricing,
+inspect local diagnostics, and export CSV reports. Imported history is retained
+when switching directories. See [Settings and CSV export](docs/settings-export.md)
+for report scopes and saved startup/tray preferences.
+
 Displayed values cover observed direct usage, excluding children, for the session
 with the latest parsed source observation time. Historical arrival order never
 selects an older session. Query output and IPC are bounded; the one-thread token

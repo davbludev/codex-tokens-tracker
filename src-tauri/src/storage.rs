@@ -3,11 +3,12 @@ use crate::{
     adapter::{self, Record, Usage},
     identity, identity_filesystem,
 };
-mod aggregates;
+pub(crate) mod aggregates;
 mod dashboard;
 mod hierarchy;
 pub(crate) mod pricing;
-mod weekly;
+mod settings;
+pub(crate) mod weekly;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Serialize;
 use std::path::Path;
@@ -30,6 +31,8 @@ pub enum Error {
     Schema,
     #[error(transparent)]
     Pricing(#[from] crate::pricing::Error),
+    #[error(transparent)]
+    Settings(#[from] crate::settings::Error),
 }
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -86,7 +89,7 @@ impl Store {
         let mut connection = Connection::open(path)?;
         connection.busy_timeout(std::time::Duration::from_secs(3))?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > 7 {
+        if version > 8 {
             return Err(Error::Schema);
         }
         if version == 0 {
@@ -144,6 +147,11 @@ impl Store {
         if version < 7 {
             let tx = connection.transaction()?;
             tx.execute_batch(include_str!("../migrations/007_model_pricing.sql"))?;
+            tx.commit()?;
+        }
+        if version < 8 {
+            let tx = connection.transaction()?;
+            tx.execute_batch(include_str!("../migrations/008_tracker_settings.sql"))?;
             tx.commit()?;
         }
         Ok(Self { connection })
@@ -288,6 +296,7 @@ impl Store {
         if lines.len() > MAX_BATCH_LINES {
             return Err(Error::RecoveryMetadata);
         }
+        let consumed_lines = !lines.is_empty();
         let tx = self.connection.transaction()?;
         let (stored_generation, mut offset, mut ordinal): (i64, u64, i64) = tx.query_row(
             "SELECT generation,offset,ordinal FROM sources WHERE path=?",
@@ -319,6 +328,9 @@ impl Store {
         }
         tx.execute("UPDATE sources SET offset=?,ordinal=?,partial=?,known_size=?,tail_length=?,tail_discarding=?,verification_start=?,verification_length=?,verification_hash=? WHERE path=?", params![progress.offset as i64,progress.ordinal,progress.tail_length>0,progress.known_size as i64,progress.tail_length as i64,progress.tail_discarding,progress.verification_start as i64,progress.verification_length,progress.verification_hash.as_ref().map(|h| h.as_slice()),path])?;
         promote(&tx, PROMOTION_LIMIT)?;
+        if consumed_lines {
+            settings::record_ingestion(&tx)?;
+        }
         tx.commit()?;
         Ok(())
     }

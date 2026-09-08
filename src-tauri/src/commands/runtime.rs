@@ -41,8 +41,22 @@ impl Work {
     pub fn new(home: &Path) -> Self {
         let home = source::normalized_path(home);
         let roots = vec![home.join("sessions"), home.join("archived_sessions")];
+        Self::with_roots(roots)
+    }
+
+    /// Keep durable accounting/pricing work and settings controls available even
+    /// when the environment provides no discoverable Codex home.
+    pub fn without_sources() -> Self {
+        Self::with_roots(Vec::new())
+    }
+
+    fn with_roots(roots: Vec<PathBuf>) -> Self {
         Self {
-            discovery: VecDeque::from([Discovery::new(roots.clone())]),
+            discovery: if roots.is_empty() {
+                VecDeque::new()
+            } else {
+                VecDeque::from([Discovery::new(roots.clone())])
+            },
             roots,
             reads: VecDeque::new(),
             queued: HashSet::new(),

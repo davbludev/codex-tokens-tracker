@@ -14,6 +14,7 @@ use std::sync::mpsc;
 pub(crate) enum Message {
     Source(notify::Result<notify::Event>),
     Pricing(Request),
+    Settings(super::settings::Request),
 }
 
 pub(crate) enum Request {

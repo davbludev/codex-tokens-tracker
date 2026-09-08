@@ -8,3 +8,4 @@
 - [Model pricing](pricing.md) — Exact rates, immutable valuations, and bounded pricing persistence.
 - [Weekly observations](weekly.md) — Cycles, comparable cost intervals, and exact percentage estimates.
 - [Frontend dependencies](frontend-dependencies.md) — npm packages and frontend build entry point.
+- [Settings and export](settings-export.md) — Source preferences, diagnostics, and streaming CSV delivery.

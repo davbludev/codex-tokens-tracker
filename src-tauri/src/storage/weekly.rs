@@ -122,7 +122,7 @@ impl Store {
     }
 }
 
-pub(super) fn register(connection: &Connection) -> Result<(), ReadError> {
+pub(crate) fn register(connection: &Connection) -> Result<(), ReadError> {
     let flags = FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC;
     connection
         .create_aggregate_function("estimated_cost_sum", 1, flags, CostSum)
@@ -205,7 +205,7 @@ pub(super) fn project_with_start(
         }, earliest))
 }
 
-fn estimate(
+pub(crate) fn estimate(
     tx: &Connection,
     start: Option<&Sample>,
     end: Option<&Sample>,
@@ -226,7 +226,7 @@ fn estimate(
 
 const INTERVAL: &str = "o.accepted=1 AND (o.time_seconds,o.time_nanos)>(?1,?2) AND (o.time_seconds,o.time_nanos)<=(?3,?4)";
 
-fn tokens(tx: &Connection, start: Time, end: Time) -> Result<Tokens, ReadError> {
+pub(crate) fn tokens(tx: &Connection, start: Time, end: Time) -> Result<Tokens, ReadError> {
     tx.query_row(
         &format!(
             "SELECT COUNT(*),{} FROM observations o WHERE {INTERVAL}",
@@ -284,7 +284,7 @@ fn models(
 
 /// Visit completed canonical time groups. Both readers use the same quota
 /// reducer, including its conflict barrier and reset-metadata tie handling.
-pub(super) fn scan(
+pub(crate) fn scan(
     connection: &Connection,
     now: Time,
     timeline: &mut Timeline,

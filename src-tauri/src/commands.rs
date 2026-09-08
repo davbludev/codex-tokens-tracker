@@ -1,5 +1,6 @@
 pub(crate) mod pricing;
 pub(crate) mod runtime;
+pub(crate) mod settings;
 
 use crate::{
     source,
@@ -117,6 +118,7 @@ fn failure(app: &tauri::AppHandle, message: &str) {
 /// is absent, watch one existing parent and advance toward the home on events.
 pub(crate) struct NativeWatch {
     watcher: notify::RecommendedWatcher,
+    #[cfg(test)]
     pub receive: mpsc::Receiver<pricing::Message>,
     pub overflow: Arc<AtomicBool>,
     home: PathBuf,
@@ -127,14 +129,12 @@ impl NativeWatch {
     #[cfg(test)]
     pub fn new(home: &Path) -> notify::Result<Self> {
         let (control, receive) = pricing::channel();
-        Self::with_inbox(home, control, receive)
+        let mut watch = Self::with_control(home, control)?;
+        watch.receive = receive;
+        Ok(watch)
     }
 
-    fn with_inbox(
-        home: &Path,
-        control: pricing::Control,
-        receive: mpsc::Receiver<pricing::Message>,
-    ) -> notify::Result<Self> {
+    fn with_control(home: &Path, control: pricing::Control) -> notify::Result<Self> {
         let overflow = Arc::new(AtomicBool::new(false));
         let callback_overflow = overflow.clone();
         let watcher = notify::recommended_watcher(move |event| {
@@ -144,7 +144,8 @@ impl NativeWatch {
         })?;
         let mut result = Self {
             watcher,
-            receive,
+            #[cfg(test)]
+            receive: mpsc::channel().1,
             overflow,
             home: source::normalized_path(home),
             watched: Vec::new(),
@@ -224,10 +225,11 @@ impl NativeWatch {
             .ancestors()
             .skip(1)
             .find(|path| path.is_dir())
+            .or_else(|| self.home.is_dir().then_some(self.home.as_path()))
             .ok_or_else(|| notify::Error::generic("Source parent is unavailable"))?;
         self.watcher.watch(parent, RecursiveMode::NonRecursive)?;
         self.watched.push(parent.to_path_buf());
-        if self.home.is_dir() {
+        if self.home.is_dir() && self.home != parent {
             self.watcher
                 .watch(&self.home, RecursiveMode::NonRecursive)?;
             self.watched.push(self.home.clone());
@@ -247,17 +249,6 @@ impl NativeWatch {
 
 pub fn start(app: tauri::AppHandle, database: PathBuf, receive: mpsc::Receiver<pricing::Message>) {
     std::thread::spawn(move || {
-        let Some(directory) = source::sessions_directory() else {
-            failure(&app, "Codex home could not be discovered");
-            return;
-        };
-        let home = match std::path::absolute(directory.parent().unwrap()) {
-            Ok(home) => home,
-            Err(_) => {
-                failure(&app, "Codex home could not be resolved");
-                return;
-            }
-        };
         let mut store = match Store::open(&database) {
             Ok(store) => store,
             Err(error) => {
@@ -265,16 +256,8 @@ pub fn start(app: tauri::AppHandle, database: PathBuf, receive: mpsc::Receiver<p
                 return;
             }
         };
-        // Subscribe before opening the first discovery iterator.
         let control = app.state::<pricing::Control>().inner().clone();
-        let mut native = match NativeWatch::with_inbox(&home, control, receive) {
-            Ok(watcher) => watcher,
-            Err(_) => {
-                failure(&app, "Native source watcher could not start");
-                return;
-            }
-        };
-        let mut work = Work::new(&home);
+        let (mut native, mut work) = settings::initialize(&app, &store, &control);
         let mut first = None;
         let mut dirty = true;
         let mut published = Instant::now() - Duration::from_millis(100);
@@ -282,19 +265,37 @@ pub fn start(app: tauri::AppHandle, database: PathBuf, receive: mpsc::Receiver<p
             let events: Vec<_> = first
                 .take()
                 .into_iter()
-                .chain(native.receive.try_iter().take(255))
+                .chain(receive.try_iter().take(255))
                 .collect();
             for event in events {
                 match event {
                     pricing::Message::Source(event) => {
-                        dirty |= native.accept(&mut work, event, Instant::now())
+                        if let Some(native) = &mut native {
+                            dirty |= native.accept(&mut work, event, Instant::now());
+                        }
                     }
                     pricing::Message::Pricing(request) => {
                         pricing::handle(request, &mut store, &mut work)
                     }
+                    pricing::Message::Settings(request) => {
+                        let result = settings::apply(
+                            request.settings,
+                            &mut store,
+                            &mut work,
+                            &mut native,
+                            &control,
+                        );
+                        if let Ok(view) = &result {
+                            settings::publish(&app, view.clone());
+                            dirty = true;
+                        }
+                        let _ = request.reply.send(result);
+                    }
                 }
             }
-            dirty |= native.recover_overflow(&mut work);
+            if let Some(native) = &mut native {
+                dirty |= native.recover_overflow(&mut work);
+            }
             match work.step(&mut store, Instant::now()) {
                 Ok(changed) => dirty |= changed,
                 Err(error) => {
@@ -330,18 +331,17 @@ pub fn start(app: tauri::AppHandle, database: PathBuf, receive: mpsc::Receiver<p
                 .min();
             // With no queued debounce or publication, wait indefinitely for an event.
             first = match deadline {
-                Some(deadline) => match native
-                    .receive
-                    .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-                {
-                    Ok(event) => Some(event),
-                    Err(mpsc::RecvTimeoutError::Timeout) => None,
-                    Err(mpsc::RecvTimeoutError::Disconnected) => {
-                        failure(&app, "Native source watcher stopped");
-                        return;
+                Some(deadline) => {
+                    match receive.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                        Ok(event) => Some(event),
+                        Err(mpsc::RecvTimeoutError::Timeout) => None,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => {
+                            failure(&app, "Native source watcher stopped");
+                            return;
+                        }
                     }
-                },
-                None => match native.receive.recv() {
+                }
+                None => match receive.recv() {
                     Ok(event) => Some(event),
                     Err(_) => {
                         failure(&app, "Native source watcher stopped");
