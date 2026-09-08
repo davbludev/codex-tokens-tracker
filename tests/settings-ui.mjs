@@ -18,18 +18,18 @@ try {
   page.on("pageerror", error => failures.push(error.message));
   await page.addInitScript(() => {
     const s = window.settingsTest = {
-      callbacks: {}, settings: { codex_directory_override: null, automatic_directory: "C:\\Users\\sample\\.codex", monitored_directory: "C:\\Users\\sample\\.codex", autostart: false, tray_enabled: true, close_to_tray: false },
+      callbacks: {}, listeners: {}, models: ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"], settings: { codex_directory_override: null, automatic_directory: "C:\\Users\\sample\\.codex", monitored_directory: "C:\\Users\\sample\\.codex", autostart: false, tray_enabled: true, close_to_tray: false },
       calls: [], settingsFailure: false, saveError: null, exportError: null, hold: false, releases: [], diagnosticsEmpty: false,
     };
     window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
     window.__TAURI_INTERNALS__ = {
       transformCallback: callback => { const id = Object.keys(s.callbacks).length + 1; s.callbacks[id] = callback; return id; },
       invoke: async (command, args) => {
-        if (command === "plugin:event|listen") return args.handler;
-        if (command === "plugin:event|unlisten") return;
+        if (command === "plugin:event|listen") { s.listeners[args.handler] = args.event; return args.handler; }
+        if (command === "plugin:event|unlisten") { delete s.listeners[args.eventId]; return; }
         if (command === "usage_snapshot") return { sourceAvailable: true };
         if (command === "usage_dashboard") throw "storage";
-        if (command === "pricing_models") return { models: [], nextCursor: null };
+        if (command === "pricing_models") return { models: s.models.map(model => ({ model, latestPrice: null })), nextCursor: null };
         s.calls.push({ command, args: structuredClone(args) });
         if (command === "tracker_settings") {
           if (s.settingsFailure) throw { code: "storage" };
@@ -63,7 +63,18 @@ try {
   const save = settings.getByRole("button", { name: "Save settings", exact: true });
   await save.waitFor();
   assert.equal(await navigation.getAttribute("aria-pressed"), "true");
-  assert.match(await settings.innerText(), /8,192 bytes[\s\S]*42[\s\S]*1,234/);
+  const source = settings.getByRole("region", { name: "Monitored source", exact: true });
+  await source.getByText("4", { exact: true }).waitFor();
+  assert.match(await source.innerText(), /C:\\Users\\sample\\.codex[\s\S]*Detected models[\s\S]*4[\s\S]*Tracked sessions[\s\S]*42[\s\S]*Usage records[\s\S]*1,234[\s\S]*Last imported/);
+  await source.getByText("Database details", { exact: true }).click();
+  assert.match(await source.innerText(), /8,192 bytes/);
+  await source.getByText("Database details", { exact: true }).click();
+  await page.evaluate(() => {
+    const s = window.settingsTest;
+    s.models.push("future-model-from-session-metadata");
+    for (const [id, event] of Object.entries(s.listeners)) if (event === "usage-updated") s.callbacks[id]({ payload: { sourceAvailable: true } });
+  });
+  await source.getByText("5", { exact: true }).waitFor();
   assert.equal(await settings.getByText(/sampling/i).count(), 0);
   await settings.getByRole("button", { name: "Configure model prices" }).click();
   await page.getByRole("dialog", { name: "Model Pricing" }).waitFor();

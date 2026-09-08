@@ -17,7 +17,7 @@
 
 ## Pricing dialog
 - Owner: `src/ModelPricing.tsx`; transport and draft validation: `src/pricing.ts`; stylesheet: `src/pricing.css`.
-- Responsibility: Configure per-model exact rates and overlap policies in a modal dialog with preserved drafts and explicit initial backfill.
+- Responsibility: Search all detected models and configure exact rates and overlap policies in a modal dialog with preserved drafts and explicit initial backfill. The shared catalog hook coalesces live refreshes and retains partial pages.
 - Look here when: Changing pricing forms, catalog loading, or accessible feedback.
 
 ## Pricing checks
@@ -27,5 +27,5 @@
 
 ## Pricing browser checks
 - Owner: `tests/pricing-ui.mjs`.
-- Responsibility: Exercise dialog keyboard behavior, exact payloads, catalog retry, draft preservation, and accessible errors with a controlled desktop bridge.
+- Responsibility: Exercise dialog keyboard behavior, exact payloads, search, catalog retry and live discovery during paging/saving, draft preservation, and accessible errors with a controlled desktop bridge.
 - Look here when: Validating the pricing UI; execution prerequisites are in `docs/model-pricing.md`.

@@ -22,5 +22,5 @@
 
 ## Settings interface
 - Owner: `src/Settings.tsx`; transport: `src/settings-data.ts`; stylesheet: `src/settings.css`; checks: `tests/settings-ui.mjs`.
-- Responsibility: Edit source and active startup/tray preferences, open pricing, inspect diagnostics, and request CSV exports with accessible outcomes.
+- Responsibility: Show the monitored source, live detected-model and import counts, edit source and active startup/tray preferences, open pricing, inspect database diagnostics, and request CSV exports with accessible outcomes.
 - Look here when: Changing Settings workflows or frontend command contracts.

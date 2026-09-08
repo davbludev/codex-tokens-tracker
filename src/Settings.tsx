@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { usePricingCatalog } from "./pricing";
 import { exportCsv, exportKinds, isAbsolutePath, loadDiagnostics, loadSettings, saveSettings, settingsError } from "./settings-data";
 import type { ExportKind, ExportResult, SettingsDraft, TrackerDiagnostics, TrackerSettings } from "./settings-data";
 import "./settings.css";
@@ -8,20 +10,49 @@ function Diagnostics({ revision }: { revision: number }) {
   const [reload, setReload] = useState(0);
   const [loading, setLoading] = useState(true);
   const [failure, setFailure] = useState("");
+  const catalog = usePricingCatalog(true);
   useEffect(() => {
-    let disposed = false;
-    setLoading(true); setFailure("");
-    void loadDiagnostics().then(result => { if (!disposed) setDiagnostics(result); }).catch(error => {
-      if (!disposed) setFailure(settingsError(error).message);
-    }).finally(() => { if (!disposed) setLoading(false); });
-    return () => { disposed = true; };
+    let disposed = false, running = false, pending = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let stop: (() => void) | undefined;
+    async function refresh() {
+      if (disposed) return;
+      if (running) { pending = true; return; }
+      running = true; setLoading(true);
+      try {
+        const result = await loadDiagnostics();
+        if (!disposed) { setDiagnostics(result); setFailure(""); }
+      } catch (error) { if (!disposed) setFailure(settingsError(error).message); }
+      finally {
+        running = false;
+        if (!disposed) {
+          if (pending) { pending = false; void refresh(); }
+          else setLoading(false);
+        }
+      }
+    }
+    void listen("usage-updated", () => {
+      if (running) { pending = true; return; }
+      if (timer === undefined) timer = setTimeout(() => { timer = undefined; void refresh(); }, 150);
+    }).then(unlisten => { if (disposed) unlisten(); else stop = unlisten; }).catch(() => {});
+    void refresh();
+    const interval = setInterval(() => void refresh(), 60_000);
+    return () => { disposed = true; clearTimeout(timer); clearInterval(interval); stop?.(); };
   }, [reload, revision]);
-  return <section className="settings-section" aria-labelledby="diagnostics-title">
-    <div className="settings-section-heading"><h3 id="diagnostics-title">Local database & diagnostics</h3><button type="button" disabled={loading} onClick={() => setReload(value => value + 1)}>{loading ? "Refreshing…" : "Refresh diagnostics"}</button></div>
-    <p>Operational details only. Conversation text and prompts are not included.</p>
+  return <section className="settings-section settings-source-summary" aria-labelledby="diagnostics-title">
+    <div className="settings-section-heading"><h3 id="diagnostics-title">Monitored source</h3><span className={`settings-source-status${diagnostics?.source_available ? " is-available" : ""}`}>{diagnostics ? diagnostics.source_available ? "Source available" : "Source unavailable" : "Checking source…"}</span></div>
+    <p className="settings-monitored-path">{diagnostics?.monitored_directory ?? "No directory selected"}</p>
     {failure && <p className="field-error" role="alert">{failure}</p>}
-    {loading && <p role="status">Loading diagnostics…</p>}
+    <dl className="settings-import-stats">
+      <div><dt>Detected models</dt><dd>{catalog.loading && !catalog.models.length ? "…" : `${catalog.models.length}${catalog.error ? "+" : ""}`}</dd></div>
+      <div><dt>Tracked sessions</dt><dd>{diagnostics?.tracked_session_count.toLocaleString() ?? "…"}</dd></div>
+      <div><dt>Usage records</dt><dd>{diagnostics?.usage_record_count.toLocaleString() ?? "…"}</dd></div>
+    </dl>
+    {catalog.error && <p className="field-error" role="alert">{catalog.error} <button type="button" onClick={() => catalog.reload(false)}>Retry model count</button></p>}
+    <div className="settings-import-activity"><p role="status">{diagnostics ? diagnostics.last_successful_ingestion_at_ms === null ? "No successful ingestion recorded" : `Last imported ${new Date(diagnostics.last_successful_ingestion_at_ms).toLocaleString()}` : "Loading import activity…"}</p><button type="button" disabled={loading} onClick={() => { setReload(value => value + 1); catalog.reload(); }}>{loading ? "Refreshing…" : "Refresh diagnostics"}</button></div>
+    {diagnostics?.error && <p className="field-error" role="alert">{diagnostics.error}</p>}
     {diagnostics && <>
+      <details className="settings-database-details"><summary>Database details</summary>
       <dl className="settings-diagnostics">
         <dt>Database location</dt><dd>{diagnostics.database_path}</dd>
         <dt>Database size</dt><dd>{diagnostics.database_size_bytes.toLocaleString()} bytes</dd>
@@ -29,10 +60,9 @@ function Diagnostics({ revision }: { revision: number }) {
         <dt>Usage records</dt><dd>{diagnostics.usage_record_count.toLocaleString()}</dd>
         <dt>Monitored Codex home</dt><dd>{diagnostics.monitored_directory ?? "No directory selected"}</dd>
         <dt>Source status</dt><dd>{diagnostics.source_available ? "Available" : "Unavailable"}</dd>
-        <dt>Last successful ingestion</dt><dd>{diagnostics.last_successful_ingestion_at_ms === null ? "No successful ingestion recorded" : new Date(diagnostics.last_successful_ingestion_at_ms).toLocaleString()}</dd>
-        <dt>Ingestion error</dt><dd>{diagnostics.error ?? "None reported"}</dd>
       </dl>
-      <p>The database stores local usage metadata, settings, and configured model prices. Prices are saved independently through Model Pricing.</p>
+      <p>The database stores local usage metadata, settings, and configured model prices.</p>
+      </details>
     </>}
   </section>;
 }
@@ -134,7 +164,9 @@ export function Settings({ onOpenPricing }: { onOpenPricing: () => void }) {
     } finally { savingRef.current = false; setSaving(false); }
   }
   return <section className="settings" aria-labelledby="settings-title">
-    <h2 id="settings-title">Settings</h2>
+    <h2 id="settings-title" className="settings-visually-hidden">Settings</h2>
+    <Diagnostics revision={revision} />
+    <section className="settings-section settings-pricing" aria-labelledby="settings-pricing-title"><div><h3 id="settings-pricing-title">Model Pricing</h3><p>All models detected in your session history, including newly used models. Configure estimates without changing priced history.</p></div><button type="button" onClick={onOpenPricing}>Configure model prices</button></section>
     {loading && <p role="status">Loading settings…</p>}
     {loadFailure && <p className="field-error" role="alert">{loadFailure} <button type="button" disabled={loading} onClick={() => setReload(value => value + 1)}>Retry settings</button></p>}
     {saved && draft && <form onSubmit={event => void submit(event)} noValidate>
@@ -165,8 +197,6 @@ export function Settings({ onOpenPricing }: { onOpenPricing: () => void }) {
       {failure && <p className="field-error" role="alert">{failure}</p>}
       <div className="settings-actions"><button type="submit" disabled={saving || loading}>{saving ? "Saving…" : "Save settings"}</button><p role="status" aria-live="polite">{saving ? "Saving settings…" : status}</p></div>
     </form>}
-    <section className="settings-section settings-pricing" aria-labelledby="settings-pricing-title"><div><h3 id="settings-pricing-title">Model Pricing</h3><p>Configure USD prices per million tokens for detected models. Existing priced history is preserved.</p></div><button type="button" onClick={onOpenPricing}>Configure model prices</button></section>
-    <Diagnostics revision={revision} />
     <CsvExport />
   </section>;
 }
