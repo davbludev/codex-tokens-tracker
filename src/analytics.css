@@ -1,8 +1,11 @@
-.analytics th[scope="row"] { min-width: 180px; max-width: 290px; overflow-wrap: anywhere; }
-.analytics td p { margin: 4px 0 10px; }
-.analytics td strong { font-weight: 500; }
-.analytics small { line-height: 1.5; }
+.analytics th[scope="row"] { min-width: 180px; max-width: 290px; overflow-wrap: anywhere; color: var(--text); font-weight: 500; }
+.analytics td p { margin: 5px 0 12px; }
+.analytics td p:last-child { margin-bottom: 0; }
+.analytics td strong { color: var(--text); font-size: 11px; font-weight: 600; }
+.analytics small { line-height: 1.55; }
 .analytics .session-page-controls button { white-space: normal; }
-.analytics :focus-visible { outline: 2px solid #a9cfff; outline-offset: 3px; }
-.app-navigation { flex-wrap: wrap; }
-.session-page-controls [aria-pressed="true"] { border-color: #89b9fa; background: #253b55; }
+.analytics .session-page-controls { color: var(--muted); font-size: 12px; }
+.analytics[aria-labelledby="projects-title"] td:nth-child(n+6) { min-width: 220px; max-width: 300px; white-space: normal; overflow-wrap: anywhere; }
+.analytics[aria-labelledby="projects-title"] td:nth-child(6) { min-width: 170px; }
+.analytics[aria-labelledby="models-title"] td:last-child { min-width: 180px; }
+.analytics :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }

@@ -1,8 +1,9 @@
 # Codex usage
 
-A local Tauri 2 desktop application showing observed direct token usage for one
-identified Codex session. Rust reads metadata and usage, reconciles modern token
-records, persists them in SQLite, and sends a bounded snapshot to React.
+A local Tauri 2 desktop application for Codex usage analytics. Track token activity,
+estimated cost, sessions, projects, models, and weekly quota observations in a dark
+dashboard. Rust reads local metadata, reconciles token records, and persists usage
+and configured prices in SQLite.
 
 Install Node.js/npm, Rust, and the Windows Tauri prerequisites (Microsoft C++
 build tools and WebView2). Then run:
@@ -13,8 +14,27 @@ npm run tauri -- dev
 ```
 
 Build a standalone Windows executable with
-`npm run tauri -- build --debug --no-bundle`; the result is
-`src-tauri/target/debug/codex-tokens-tracker.exe`.
+`npm run tauri -- build --no-bundle`; the result is
+`src-tauri/target/release/codex-tokens-tracker.exe`. Add `--debug` for a faster
+development build under `target/debug`.
+
+To launch the normal build against your real history from PowerShell:
+
+```powershell
+$env:CODEX_HOME = Join-Path $env:USERPROFILE '.codex'
+& .\src-tauri\target\release\codex-tokens-tracker.exe
+```
+
+This sets the source for that PowerShell process and its children. Check the
+monitored folder in **Settings**: a verification build or inherited test
+`CODEX_HOME` can point at fixture data instead of your real session history.
+
+The dashboard defaults to seven days, with token and cost charts independent of
+weekly quota availability. Model and project breakdowns include the top five,
+remaining usage, and unattributed usage. Exact values remain available through
+inspection controls. Cost requires configured prices; unpriced usage is unknown,
+and partial estimates show an incomplete known subtotal. Model Pricing discovers
+all model IDs from logs and refreshes automatically as new models appear.
 
 The monitor discovers `sessions` and `archived_sessions` under `CODEX_HOME`,
 or the user's `.codex` directory. Native watches are registered before bounded
@@ -29,11 +49,10 @@ inspect local diagnostics, and export CSV reports. Imported history is retained
 when switching directories. See [Settings and CSV export](docs/settings-export.md)
 for report scopes and saved startup/tray preferences.
 
-Displayed values cover observed direct usage, excluding children, for the session
-with the latest parsed source observation time. Historical arrival order never
-selects an older session. Query output and IPC are bounded; the one-thread token
-SUM still scales with that thread's accepted history. Pricing, weekly calculations,
-and broader analytics remain later tasks. Missing source directories are watched
+Global and range totals count accepted direct usage once per session, including
+descendant sessions in their own right. The latest-session snapshot uses parsed
+observation time rather than import order. Query output and IPC are bounded;
+aggregation still scans the relevant accepted history. Missing source directories are watched
 through an existing parent and become available without restarting. Legacy-only counters are
 unavailable. Unknown envelopes produce a coverage notice. Invalid modern usage
 stops accounting for that source; a historical gap remains pending and can be

@@ -12,7 +12,7 @@ try {
     server.on("exit", code => { clearTimeout(deadline); reject(new Error(`Vite exited ${code}`)); });
   });
   browser = await chromium.launch({ channel: "msedge", headless: true });
-  const page = await browser.newPage({ viewport: { width: 1100, height: 950 } });
+  const page = await browser.newPage({ viewport: { width: 1200, height: 800 } });
   const failures = [];
   page.on("pageerror", error => { failures.push(error.message); console.error(error.message); });
   // Observe the native chart contract without adding a production test API.
@@ -20,7 +20,7 @@ try {
     const response = await route.fetch();
     const source = await response.text();
     assert.ok(source.includes("export { uPlot as default };"));
-    await route.fulfill({ response, body: source.replace("export { uPlot as default };", "const ObservedPlot = new Proxy(uPlot, { construct(target, args) { const plot = Reflect.construct(target, args); window.dashboardPlot = plot; return plot; } }); export { ObservedPlot as default };") });
+    await route.fulfill({ response, body: source.replace("export { uPlot as default };", "const ObservedPlot = new Proxy(uPlot, { construct(target, args) { const plot = Reflect.construct(target, args); if (plot.series.some(series => series.scale === 'weekly')) window.dashboardPlot = plot; return plot; } }); export { ObservedPlot as default };") });
   });
   if (!process.env.DASHBOARD_APP_MOUNT) await page.route("http://127.0.0.1:1422/", route => route.fulfill({ contentType: "text/html", body: '<html><div id="root"></div><script type="module">import React from "/node_modules/.vite/deps/react.js"; import ReactDOM from "/node_modules/.vite/deps/react-dom_client.js"; import {Dashboard} from "/src/Dashboard.tsx"; import "/src/style.css"; ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(Dashboard));</script></html>' }));
   await page.addInitScript(() => {
@@ -35,10 +35,24 @@ try {
     const estimate = { start: time(1800000000), end: time(1800000900), consumedPercentagePoints: "2.000000001", estimatedCost: cost(), effectiveUsdPerPercent: "0.617283945", estimatedFullWeekUsd: "61.7283945", unavailableReason: null };
     const observation = { time: time(1800000900), usedPercent: "42.000000001", remainingPercent: "57.999999999", resetsAt: 1800600000 };
     const category = { knownTokens: "9007199254740993", complete: true };
+    const tokens = (total, input = total, output = 0) => Object.fromEntries(["totalTokens", "inputTokens", "cachedInputTokens", "cacheWriteTokens", "reasoningTokens", "outputTokens"].map(key => [key, { knownTokens: String(key === "totalTokens" ? total : key === "inputTokens" ? input : key === "outputTokens" ? output : 0), complete: true }]));
+    const summary = { tokens: tokens(12451993, 11203000, 1248993), estimatedCost: cost("1234567890123"), observedSessions: 24 };
+    const breakdown = (key, label, kind, total, knownSubtotal) => ({ key, label, kind, tokens: { knownTokens: String(total), complete: true }, estimatedCost: cost(knownSubtotal) });
     const response = {
       evaluatedAt: time(1800001000), tokenScope: "locallyObservedGlobalAllHistory",
       weekly: { evaluatedAt: time(1800001000), currentCycle: { key: "cycle", firstObservation: observation, lastObservation: observation, detectedReset: false, hasAmbiguousObservations: false, fullCycleCostKnown: false }, observationAgeSeconds: 100, overall: estimate, recent: estimate, unmatchedCost: cost("500000000000"), unmatchedCostStart: time(1800000900), history: [], nextCursor: null, excludedSamples: 0, sessionWeeklyPercentageImpact: null, coverageNote: "Local observations only." },
       global: { tokens: Object.fromEntries(["totalTokens", "inputTokens", "cachedInputTokens", "cacheWriteTokens", "reasoningTokens", "outputTokens"].map(key => [key, category])), estimatedCost: cost(), coverage: { incompleteSessions: 1, unavailableSessions: 0, unresolvedUsage: true, unknownModel: false, unattributedProject: false, sourceDiagnostics: false }, observedAt: null, observedSessions: 2, placeholders: 0 },
+      localUsage: { start: time(1799994000), end: time(1800001000), binCount: 10, summary, untimedObservations: 2, coverageNote: "Each accepted direct session observation is counted once. Untimed usage is excluded from the chart.", points: [
+        { index: 0, start: time(1799994000), end: time(1799994700), tokens: tokens(1200000, 1000000, 200000), estimatedCost: cost("100000000000"), observedSessions: 3 },
+        { index: 2, start: time(1799995400), end: time(1799996100), tokens: tokens(2400000, 2200000, 200000), estimatedCost: cost("234567890123"), observedSessions: 6 },
+        { index: 5, start: time(1799997500), end: time(1799998200), tokens: tokens(5400000, 5000000, 400000), estimatedCost: cost("600000000000"), observedSessions: 8 },
+        { index: 8, start: time(1799999600), end: time(1800000300), tokens: tokens(3451993, 3003000, 448993), estimatedCost: cost("300000000000"), observedSessions: 7 },
+      ] },
+      breakdowns: { metric: "tokens", models: [
+        breakdown("astra", "gpt-6-astra", "model", 6000000, "500000000000"), breakdown("sol", "gpt-5.6-sol", "model", 2400000, "300000000000"), breakdown("terra", "gpt-5.6-terra", "model", 1800000, "200000000000"), breakdown("luna", "gpt-5.6-luna", "model", 1200000, "150000000000"), breakdown("future", "future-model", "model", 600000, "70000000000"), breakdown("other", "Other models", "other", 400000, "14000000000"), breakdown("unknown", "Unknown model", "unknown", 51993, "567890123"),
+      ], projects: [
+        breakdown("tracker", "codex-tokens-tracker", "project", 6000000, "600000000000"), breakdown("website", "Website", "project", 2400000, "300000000000"), breakdown("tools", "CLI tools", "project", 1800000, "200000000000"), breakdown("docs", "Documentation", "project", 1200000, "80000000000"), breakdown("prototype", "Prototype", "project", 600000, "40000000000"), breakdown("other", "Other projects", "other", 400000, "14000000000"), breakdown("unknown", "Unattributed project", "unknown", 51993, "567890123"),
+      ] },
       chart: { range: "currentCycle", start: time(1800000000), end: time(1800001000), binCount: 10, returnedObservationCount: 3, sourceObservationCount: 3, coverageNote: "Accepted observation segments.",
         points: [
           { time: time(1800000000), segmentId: "a", weeklyUsedPercent: "40", cumulativeEstimatedCost: cost("0"), effectiveUsdPerPercent: null, unavailableReason: "belowOnePercentagePoint", connectFromPrevious: false },
@@ -58,7 +72,7 @@ try {
         if (command === "pricing_models") return { models: [], nextCursor: null };
         if (command !== "usage_dashboard") return null;
         state.calls.push(args.query); state.active++; state.maxActive = Math.max(state.maxActive, state.active);
-        const result = structuredClone(state.response); result.chart.range = args.query.range;
+        const result = structuredClone(state.response); result.chart.range = args.query.range; result.breakdowns.metric = args.query.breakdownMetric;
         try {
           if (state.hold) await new Promise(resolve => state.releases.push(resolve));
           if (state.fail) throw "storage";
@@ -69,8 +83,29 @@ try {
   });
   await page.clock.install();
   await page.goto("http://127.0.0.1:1422");
-  await page.getByText("42.000000001% / 57.999999999%", { exact: true }).waitFor();
+  await page.locator(".dashboard-summary").waitFor();
+  assert.equal(await page.getByRole("button", { name: "7 days", exact: true }).getAttribute("aria-pressed"), "true", "dashboard defaults to seven days");
+  assert.equal(await page.locator(".dashboard-summary .dashboard-metric").count(), 4);
+  await page.waitForFunction(() => document.querySelectorAll(".usage-chart .uplot").length === 2);
+  assert.equal(await page.locator(".weekly-details").getAttribute("open"), null, "coverage details start collapsed");
+  assert.equal(await page.locator(".dashboard-history-details").getAttribute("open"), null);
+  assert.match(await page.locator(".dashboard-coverage").innerText(), /2 observations have no timestamp/);
+  for (const [title, unknown, remainder] of [["By model", "Unknown model", "Other models"], ["By project", "Unattributed project", "Other projects"]]) {
+    const panel = page.getByRole("region", { name: title, exact: true });
+    assert.equal(await panel.locator(".breakdown-list > li").count(), 7, "bounded top five plus remainder and unattributed rows");
+    await panel.getByText(unknown, { exact: true }).waitFor();
+    await panel.getByText(remainder, { exact: true }).waitFor();
+  }
   if (process.env.DASHBOARD_APP_MOUNT) {
+    const nav = page.getByRole("navigation", { name: "Usage views" });
+    const names = ["Dashboard", "Sessions", "Projects", "Models", "Weekly History", "Settings"];
+    assert.equal(await nav.getByRole("button").count(), names.length);
+    for (const name of names) {
+      const button = nav.getByRole("button", { name, exact: true });
+      await button.focus();
+      assert.equal(await button.evaluate(el => el === document.activeElement), true, name + " navigation is keyboard reachable");
+      assert.equal(await button.getAttribute("aria-pressed"), String(name === "Dashboard"));
+    }
     const pricingTrigger = page.getByRole("button", { name: "Model Pricing", exact: true });
     await pricingTrigger.click();
     const dialog = page.getByRole("dialog", { name: "Model Pricing", exact: true });
@@ -79,8 +114,18 @@ try {
     await dialog.getByRole("button", { name: "Close", exact: true }).click();
     await dialog.waitFor({ state: "hidden" });
     assert.equal(await pricingTrigger.evaluate(el => el === document.activeElement), true, "pricing close restores shell focus");
-    await page.getByText("42.000000001% / 57.999999999%", { exact: true }).waitFor();
   }
+  await page.locator(".dashboard-toolbar").scrollIntoViewIfNeeded();
+  if (process.env.DASHBOARD_SCREENSHOT) await page.screenshot({ path: process.env.DASHBOARD_SCREENSHOT, fullPage: true });
+  const wide = await page.locator(".usage-chart .uplot").evaluateAll(elements => elements.map(el => el.clientWidth));
+  await page.setViewportSize({ width: 390, height: 850 });
+  await page.waitForFunction(widths => Array.from(document.querySelectorAll(".usage-chart .uplot")).every((el, index) => el.clientWidth < widths[index]), wide);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "dashboard fits narrow viewport");
+  if (process.env.DASHBOARD_SCREENSHOT) await page.screenshot({ path: process.env.DASHBOARD_SCREENSHOT.replace(/\.png$/, "-narrow.png"), fullPage: true });
+  await page.setViewportSize({ width: 1200, height: 800 });
+  await page.locator(".weekly-details > summary").click();
+  await page.locator(".dashboard-history-details > summary").click();
+  await page.getByText("42.000000001% / 57.999999999%", { exact: true }).waitFor();
   await page.getByText("Since observation began · partial cycle", { exact: true }).waitFor();
   await page.getByText("Coverage warning:", { exact: false }).waitFor();
   assert.match(await page.locator(".dashboard-tokens").innerText(), /9,007,199,254,740,993/);
@@ -96,6 +141,18 @@ try {
   assert.ok(scales.ratio > 0.617283945 && scales.ratio < scales.cost);
   assert.equal(scales.moves, 2, "reset starts a new path");
   assert.equal(scales.lines, 1, "only observations within the segment connect");
+  for (const kind of ["tokens", "cost"]) {
+    const chart = page.locator(".usage-chart-" + kind);
+    await chart.locator(".chart-inspector > summary").click();
+    const control = chart.getByRole("slider");
+    await control.focus(); await page.keyboard.press("Home"); await page.keyboard.press("ArrowRight");
+    const readout = await chart.locator(".chart-inspector [role=status]").innerText();
+    assert.match(readout, /\.123456789Z/, "local chart inspection preserves exact time");
+    assert.match(readout, kind === "tokens" ? /2,400,000/ : /\$0.234567890123/, "local chart keyboard inspection preserves exact native amounts");
+    await page.keyboard.press("End");
+    assert.match(await chart.locator(".chart-inspector [role=status]").innerText(), kind === "tokens" ? /3,451,993/ : /\$0.3/);
+  }
+  await page.locator(".quota-inspector > summary").click();
   const slider = page.getByLabel("Inspect observation", { exact: false });
   await slider.focus(); await page.keyboard.press("Home"); await page.keyboard.press("ArrowRight");
   assert.match(await page.locator("#dashboard-selected").innerText(), /\$1.234567890123/);
@@ -103,16 +160,10 @@ try {
   assert.match(await page.locator("#dashboard-selected").innerText(), /42.000000001%/);
   await page.keyboard.press("End");
   assert.match(await page.locator("#dashboard-selected").innerText(), /observation boundary; no connection/);
-  await page.locator(".u-over").hover({ position: { x: 20, y: 50 } });
-  await page.getByRole("tooltip").waitFor();
-  assert.match(await page.getByRole("tooltip").innerText(), /\.123456789Z/);
+  await page.locator(".dashboard-plot .u-over").hover({ position: { x: 20, y: 50 } });
+  await page.locator(".dashboard-tooltip").waitFor();
+  assert.match(await page.locator(".dashboard-tooltip").innerText(), /\.123456789Z/);
   await page.mouse.move(0, 0);
-  if (process.env.DASHBOARD_SCREENSHOT) await page.screenshot({ path: process.env.DASHBOARD_SCREENSHOT, fullPage: true });
-  const wide = await page.locator(".uplot").evaluate(el => el.clientWidth);
-  await page.setViewportSize({ width: 390, height: 850 });
-  await page.waitForFunction(width => document.querySelector(".uplot").clientWidth < width, wide);
-  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "dashboard fits narrow viewport");
-  if (process.env.DASHBOARD_SCREENSHOT) await page.screenshot({ path: process.env.DASHBOARD_SCREENSHOT.replace(/\.png$/, "-narrow.png"), fullPage: true });
   const beforeBurst = await page.evaluate(() => { const s = window.dashboardTest; const count = s.calls.length; for (let i = 0; i < 20; i++) s.callbacks[s.listener]({ payload: {} }); return count; });
   await page.clock.runFor(200);
   assert.equal(await page.evaluate(() => window.dashboardTest.calls.length), beforeBurst + 1, "event burst coalesces into one read");
@@ -123,7 +174,7 @@ try {
   await page.evaluate(() => { const s = window.dashboardTest; s.hold = true; s.callbacks[s.listener]({ payload: {} }); });
   await page.clock.runFor(200);
   await page.waitForFunction(() => window.dashboardTest.active === 1);
-  const currentRange = page.getByRole("button", { name: "Current cycle", exact: true });
+  const currentRange = page.getByRole("button", { name: "7 days", exact: true });
   await currentRange.focus();
   await page.keyboard.press("Enter");
   assert.equal(await currentRange.evaluate(el => el === document.activeElement), true, "reselecting the active range preserves focus while loading");
@@ -147,11 +198,68 @@ try {
   assert.equal(await page.getByRole("button", { name: "All", exact: true }).getAttribute("aria-pressed"), "true");
   assert.equal(await page.evaluate(() => window.dashboardTest.maxActive), 1);
   assert.equal(await page.evaluate(() => window.dashboardTest.calls.some(call => "pointBudget" in call)), false);
-  await page.evaluate(() => { const s = window.dashboardTest; s.response.chart.points = []; s.response.chart.boundaries = []; s.response.weekly.overall.estimatedCost.complete = false; s.response.weekly.overall.effectiveUsdPerPercent = null; s.response.weekly.overall.unavailableReason = "unpricedUsage"; s.callbacks[s.listener]({ payload: {} }); });
+  const metric = page.getByRole("group", { name: "Breakdown metric" });
+  const costMetric = metric.getByRole("button", { name: "Estimated cost", exact: true });
+  const tokenMetric = metric.getByRole("button", { name: "Tokens", exact: true });
+  await page.evaluate(() => { const s = window.dashboardTest; s.hold = true; s.response.breakdowns.models[0].label = "Stale ranking"; });
+  await costMetric.focus(); await page.keyboard.press("Enter");
+  await page.waitForFunction(() => window.dashboardTest.active === 1 && window.dashboardTest.calls.at(-1).breakdownMetric === "cost");
+  assert.equal(await costMetric.evaluate(el => el === document.activeElement), true, "metric remains keyboard focused while loading");
+  await page.evaluate(() => { window.dashboardTest.response.breakdowns.models[0].label = "Latest ranking"; });
+  await tokenMetric.focus(); await page.keyboard.press("Enter");
+  await page.evaluate(() => window.dashboardTest.releases.splice(0).forEach(resolve => resolve()));
+  await page.waitForFunction(() => window.dashboardTest.calls.at(-1).breakdownMetric === "tokens" && window.dashboardTest.releases.length === 1);
+  assert.equal(await page.getByText("Stale ranking", { exact: true }).count(), 0, "an obsolete metric response never publishes");
+  await page.evaluate(() => { const s = window.dashboardTest; s.hold = false; s.releases.splice(0).forEach(resolve => resolve()); });
+  await page.getByText("Latest ranking", { exact: true }).waitFor();
+  assert.equal(await tokenMetric.getAttribute("aria-pressed"), "true");
+  assert.equal(await tokenMetric.evaluate(el => el === document.activeElement), true, "metric remains focused after success");
+  await costMetric.click();
+  await page.waitForFunction(() => window.dashboardTest.active === 0 && window.dashboardTest.calls.at(-1).breakdownMetric === "cost");
+  assert.equal(await costMetric.getAttribute("aria-pressed"), "true", "cost selector applies the backend ranking metric");
+  assert.equal(await page.locator(".breakdown-cost").count(), 2);
+  assert.equal(await page.evaluate(() => window.dashboardTest.maxActive), 1, "range, metric and live refreshes share one read queue");
+  await page.evaluate(() => {
+    const s = window.dashboardTest;
+    s.response.chart.points = []; s.response.chart.boundaries = []; s.response.weekly.currentCycle = null;
+    s.response.weekly.overall.estimatedCost.complete = false; s.response.weekly.overall.effectiveUsdPerPercent = null; s.response.weekly.overall.unavailableReason = "unpricedUsage";
+    s.response.localUsage.points[1].tokens.totalTokens.knownTokens = "9007199254740993";
+    s.response.localUsage.summary.tokens.totalTokens.knownTokens = s.response.localUsage.points.reduce((sum, point) => sum + BigInt(point.tokens.totalTokens.knownTokens), 0n).toString();
+    s.callbacks[s.listener]({ payload: {} });
+  });
   await page.clock.runFor(200);
   await page.getByText("No weekly observations in this range.", { exact: true }).waitFor();
+  await page.getByText("Awaiting quota data", { exact: true }).waitFor();
+  assert.equal(await page.locator(".usage-chart .uplot").count(), 2, "local charts remain available without quota observations");
   await page.getByText("Unpriced usage — estimate unavailable", { exact: true }).first().waitFor();
-  assert.match(await page.locator(".dashboard-metrics").innerText(), /incomplete known subtotal/);
+  await page.locator(".weekly-details > summary").click();
+  assert.match(await page.locator(".weekly-details").innerText(), /incomplete known subtotal/);
+  await page.locator(".usage-chart-tokens .chart-inspector > summary").click();
+  const exactTokenSlider = page.locator(".usage-chart-tokens").getByRole("slider");
+  await exactTokenSlider.focus(); await page.keyboard.press("Home"); await page.keyboard.press("ArrowRight");
+  assert.match(await page.locator(".usage-chart-tokens .chart-inspector [role=status]").innerText(), /9,007,199,254,740,993/, "local token inspection does not round integers above the safe floating point limit");
+  await page.evaluate(() => {
+    const s = window.dashboardTest;
+    for (const usage of [s.response.localUsage.summary, ...s.response.localUsage.points, ...s.response.breakdowns.models, ...s.response.breakdowns.projects]) usage.estimatedCost = { knownSubtotal: null, complete: false };
+    s.callbacks[s.listener]({ payload: {} });
+  });
+  await page.clock.runFor(200);
+  await page.getByText("Add prices to see estimated cost", { exact: true }).waitFor();
+  assert.equal(await page.locator(".usage-chart-tokens .uplot").count(), 1, "unpriced usage retains its token chart");
+  assert.equal(await page.locator(".usage-chart-cost .uplot").count(), 0, "unknown cost is not plotted as zero");
+  assert.match(await page.locator(".dashboard-summary .metric-cost").innerText(), /Unpriced/);
+  assert.match(await page.locator(".dashboard-coverage").innerText(), /Some usage is unpriced/);
+  if (process.env.DASHBOARD_APP_MOUNT) await page.locator(".usage-chart-cost").getByRole("button", { name: "Configure prices" }).waitFor();
+  await page.evaluate(() => {
+    const s = window.dashboardTest;
+    s.response.localUsage.summary.estimatedCost.knownSubtotal = "100000000000";
+    s.response.localUsage.points[0].estimatedCost.knownSubtotal = "100000000000";
+    s.callbacks[s.listener]({ payload: {} });
+  });
+  await page.clock.runFor(200);
+  await page.locator(".usage-chart-cost .uplot").waitFor();
+  assert.match(await page.locator(".usage-chart-cost .chart-footnote").innerText(), /Incomplete known subtotal/);
+  await allRange.focus();
   await page.evaluate(() => { const s = window.dashboardTest; s.fail = true; s.callbacks[s.listener]({ payload: {} }); });
   await page.clock.runFor(200);
   await page.getByRole("alert").waitFor();
@@ -159,6 +267,11 @@ try {
   await page.evaluate(() => { window.dashboardTest.fail = false; });
   await page.getByRole("button", { name: "Retry dashboard" }).click();
   await page.getByRole("alert").waitFor({ state: "hidden" });
+  await page.evaluate(() => { const s = window.dashboardTest; s.response.localUsage.points = []; s.response.breakdowns.models = []; s.response.breakdowns.projects = []; s.callbacks[s.listener]({ payload: {} }); });
+  await page.clock.runFor(200);
+  await page.locator(".usage-chart").getByText("No recorded activity", { exact: true }).first().waitFor();
+  assert.equal(await page.locator(".usage-chart").getByText("No recorded activity", { exact: true }).count(), 2);
+  assert.equal(await page.getByText("No recorded usage in this range.", { exact: true }).count(), 2);
   assert.deepEqual(failures, []);
-  console.log("Dashboard UI: exact keyboard/hover readout, responsive canvas, serialized live/range refresh, partial/coverage/unpriced/no-data/error states passed.");
+  console.log("Dashboard UI: two responsive local charts, exact keyboard/hover readouts, bounded breakdowns, serialized live/range/metric refresh, quota-independent tokens, unpriced/partial/empty/retry states passed.");
 } finally { await browser?.close(); server.kill(); }

@@ -1,7 +1,8 @@
 /** Native decimal strings remain exact; convert only coordinates used for drawing. */
 export type ObservationTime = { seconds: number; nanos: number };
 export type DashboardRange = "currentCycle" | "last24Hours" | "last7Days" | "last30Days" | "all";
-export type DashboardQuery = { range: DashboardRange; pointBudget?: number };
+export type BreakdownMetric = "tokens" | "cost";
+export type DashboardQuery = { range: DashboardRange; pointBudget?: number; breakdownMetric?: BreakdownMetric };
 export type DashboardReadError = "invalidQuery" | "storage";
 export type UnavailableReason = "insufficientObservations" | "ambiguousObservation" | "belowOnePercentagePoint" | "unpricedUsage";
 export type EstimatedCost = {
@@ -108,4 +109,25 @@ export type DashboardResponse = {
   global: GlobalSummary;
   tokenScope: string;
   chart: DashboardChart;
+  localUsage: LocalUsage;
+  breakdowns: { metric: BreakdownMetric; models: UsageBreakdown[]; projects: UsageBreakdown[] };
+};
+
+export type LocalUsageSummary = Pick<GlobalSummary, "tokens" | "estimatedCost" | "observedSessions">;
+export type UsageBin = LocalUsageSummary & { index: number; start: ObservationTime; end: ObservationTime };
+export type LocalUsage = {
+  start: ObservationTime;
+  end: ObservationTime;
+  binCount: number;
+  summary: LocalUsageSummary;
+  points: UsageBin[];
+  untimedObservations: number;
+  coverageNote: string;
+};
+export type UsageBreakdown = {
+  key: string;
+  label: string;
+  kind: "model" | "project" | "unknown" | "other";
+  tokens: TokenCategory;
+  estimatedCost: GlobalSummary["estimatedCost"];
 };

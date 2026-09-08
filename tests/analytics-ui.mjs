@@ -52,7 +52,7 @@ try {
     };
   });
   await page.clock.install();
-  await page.goto("http://127.0.0.1:1424/");
+  await page.goto("http://127.0.0.1:1424/", { timeout: 30000 });
   await page.getByRole("rowheader", { name: /^C:\/project-0/ }).waitFor();
   assert.equal(await page.locator("tbody tr").count(), 25);
   const projectRow = page.locator("tbody tr").first();

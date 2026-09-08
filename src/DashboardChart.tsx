@@ -67,13 +67,13 @@ export function DashboardChart({ chart }: { chart: ChartData }) {
     {chart.points.length === 0 ? <p role="status">No weekly observations in this range.</p> : <>
       <div className="dashboard-plot" ref={host} aria-hidden="true" />
       {hovered !== null && chart.points[hovered] && <div role="tooltip" className="dashboard-tooltip"><PointReadout point={chart.points[hovered]} /></div>}
-      <div className="dashboard-inspection">
+      <details className="quota-inspector"><summary>Inspect quota observations</summary><div className="dashboard-inspection">
         <label htmlFor="dashboard-point">Inspect observation ({Math.min(selected + 1, chart.points.length)} of {chart.points.length})</label>
         <input id="dashboard-point" type="range" min="0" max={chart.points.length - 1} value={Math.min(selected, chart.points.length - 1)}
           onChange={event => setSelected(Number(event.target.value))} aria-describedby="dashboard-selected" />
         <span className="dashboard-muted">Arrow keys move; Home / End jump to first / last.</span>
       </div>
-      <div id="dashboard-selected" role="status" aria-live="polite" aria-atomic="true"><PointReadout point={point} /></div>
+      <div id="dashboard-selected" role="status" aria-live="polite" aria-atomic="true"><PointReadout point={point} /></div></details>
     </>}
     <p className="dashboard-muted">{chart.coverageNote} Lines restart for each trustworthy segment; dashed markers indicate observation boundaries.</p>
     {chart.boundaries.length > 0 && <details><summary>{chart.boundaries.reduce((sum, b) => sum + b.count, 0)} observation boundaries</summary>

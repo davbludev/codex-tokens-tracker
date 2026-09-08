@@ -39,3 +39,8 @@
 - Owner: `src-tauri/src/storage/dashboard/usage.rs`.
 - Responsibility: Prepare sparse direct-usage bins, range totals and exact ranked model/project breakdowns independent of quota availability, preserving unknown and remainder groups.
 - Look here when: Changing local dashboard history, composition ranking or missing-quota behavior.
+
+## Dashboard interface
+- Owner: `src/Dashboard.tsx`; charts: `src/UsageChart.tsx`, `src/UsageBreakdowns.tsx`, `src/DashboardChart.tsx`; reads: `src/dashboard-data.ts`.
+- Responsibility: Show selected-range token/cost cards, independent activity charts, ranked composition and secondary quota history with exact inspection and serialized live refresh.
+- Look here when: Changing dashboard layout, range controls, chart accessibility or incomplete-data presentation.

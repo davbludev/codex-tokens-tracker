@@ -10,7 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [{ "title": "Codex usage", "width": 760, "height": 480, "minWidth": 420, "minHeight": 340 }],
+    "windows": [{ "title": "Codex usage", "width": 1200, "height": 800, "minWidth": 420, "minHeight": 340 }],
     "security": {
       "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
     }

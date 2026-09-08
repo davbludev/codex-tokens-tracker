@@ -32,7 +32,7 @@
 
 ## Presentation
 - Owner: `src/main.tsx`; stylesheet: `src/style.css`.
-- Responsibility: Mount the dashboard and Model Pricing dialog, and display source status and connection diagnostics.
+- Responsibility: Mount six analytics views and Model Pricing in a responsive sidebar shell, with shared theme controls, source status and connection diagnostics.
 - Look here when: Changing the desktop app shell or pricing entry point.
 
 ## Ingestion checks

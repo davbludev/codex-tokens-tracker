@@ -57,7 +57,7 @@ try {
     };
   });
   await page.clock.install();
-  await page.goto("http://127.0.0.1:1425/");
+  await page.goto("http://127.0.0.1:1425/", { timeout: 30000 });
   const navigation = page.getByRole("button", { name: "Weekly History", exact: true });
   await navigation.focus(); await page.keyboard.press("Enter");
   const cycles = page.getByRole("region", { name: "Completed cycle comparison" });
