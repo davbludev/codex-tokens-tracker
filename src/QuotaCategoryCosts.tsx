@@ -30,14 +30,17 @@ export function QuotaCategoryCosts({ analysis }: { analysis: Analysis }) {
       });
     });
     const bars = uPlot.paths.bars!({ size: [.7, 28, 1], radius: .12, align: 0 });
+    // The surface-colored separator shrinks with the bar so dense charts stay visible.
+    const slot = Math.max(200, host.current.clientWidth) / Math.max(1, intervals.length);
+    const separator = slot >= 16 ? 2 : slot >= 8 ? 1 : 0;
     const plot = new uPlot({ width: Math.max(200, host.current.clientWidth), height: 260,
       legend: { show: false }, cursor: { drag: { x: false, y: false } },
       scales: { x: { time: false, range: [.5, intervals.length + .5] }, y: { range: (_plot, _min, max) => [0, max > 0 ? max * 1.1 : 1] } },
       axes: [{ stroke: "#aebccc", grid: { show: false }, incrs: [1, 2, 5, 10, 20, 50, 100, 200], values: (_plot, ticks) => ticks.map(tick => intervals[tick - 1] ? localTime(intervals[tick - 1].end) : "") },
         { label: "USD / 1%", stroke: "#aebccc", grid: { stroke: "#293442" }, size: 88,
           values: (_plot, ticks) => ticks.map(value => value !== 0 && (Math.abs(value) < 0.001 || Math.abs(value) >= 1e9) ? value.toExponential(2) : value.toLocaleString(undefined, { maximumSignificantDigits: 5 })) }],
-      // A 2px surface stroke separates stacked segments and adjacent bars.
-      series: [{}, ...[...categories].reverse().map(category => ({ label: category.label, fill: category.color, stroke: surface, width: 2, paths: bars, points: { show: false } }))],
+      // A surface stroke separates stacked segments and adjacent bars.
+      series: [{}, ...[...categories].reverse().map(category => ({ label: category.label, fill: category.color, stroke: surface, width: separator, paths: bars, points: { show: false } }))],
       hooks: { setCursor: [plot => setInspected(plot.cursor.idx ?? null)] },
     }, [intervals.map((_, index) => index + 1), ...[...stacked].reverse()], host.current);
     const resize = new ResizeObserver(() => { if (host.current) plot.setSize({ width: Math.max(200, host.current.clientWidth), height: 260 }); });
@@ -63,6 +66,6 @@ export function QuotaCategoryCosts({ analysis }: { analysis: Analysis }) {
     </article>)}</div>
     <p className="category-total"><span>Total across categories</span><span><strong>{formatted(stats.totalUsd, true)}</strong> USD / 1% · {formatted(stats.totalFullUsd, true)} USD / 100%</span></p>
     {stats.totalUsd === null && <p className="hypothesis-unavailable">USD unavailable — {stats.reason} ({stats.count} / {intervals.length} priced)</p>}
-    <p className="dashboard-muted">Weighted by observed percentage points across all retained intervals. Categories add up to the interval's estimated token cost; any unpriced usage makes the whole comparison unavailable rather than showing a priced subset.</p>
+    <p className="dashboard-muted">Weighted by observed percentage points over the {stats.count} priced interval{stats.count === 1 ? "" : "s"}{stats.withoutUsage > 0 && `; ${stats.withoutUsage} with no local usage`}{stats.excluded > 0 && `; ${stats.excluded} with unpriced or invalid usage`}{(stats.withoutUsage > 0 || stats.excluded > 0) && " excluded"}. Categories add up to each interval's estimated token cost.</p>
   </section>;
 }

@@ -86,8 +86,13 @@ key's fixed order, with a 2px surface gap between segments. Bars use an ordinal
 axis labelled with each interval's end time; hover or focus the chart and use
 Left/Right, Home/End to read exact per-category USD / 1%. Four tiles report the
 weighted USD / 1%, the share of the total and USD / 100% per category, using the
-same weighted formula as the hypotheses. The tiles are unavailable unless every
-retained interval is priced; a priced subset is never presented as the whole.
+same weighted formula as the hypotheses but over the priced intervals only.
+Intervals with no local usage (quota consumed elsewhere) and intervals with
+unpriced or invalid usage draw no bar and are excluded from the averages; the
+panel states how many were priced and how many were excluded for each reason,
+so the statistics stay available whenever at least one interval is priced. The
+separator between stacked segments narrows with the bars so dense charts of
+hundreds of intervals remain visible.
 
 Verification: Rust domain tests cover all masks, both write interpretations,
 component rates, missing/invalid counters and unpriced usage. Storage tests cover

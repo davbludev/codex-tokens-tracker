@@ -16,25 +16,33 @@ export function categoryPerPercent(interval: QuotaInterval, key: CategoryKey): s
   return amount === null ? null : perPercent(amount, interval.consumedPercentagePoints, 12, 6);
 }
 
-/** Weighted USD / 1% per category over the retained intervals; unavailable unless every interval is priced. */
+export const NO_LOCAL_USAGE = "No local usage observations";
+
+/**
+ * Weighted USD / 1% per category over the priced intervals. Intervals without
+ * local usage or with unpriced usage are counted and excluded, never blocking:
+ * the statistics describe the priced intervals and say so.
+ */
 export function categoryStats(intervals: QuotaInterval[]) {
   const priced = intervals.filter(interval => interval.categories.reason === null);
-  // Never present a priced subset as the monetary result for the whole scope.
-  const complete = intervals.length > 0 && priced.length === intervals.length;
+  const withoutUsage = intervals.filter(interval => interval.categories.reason === NO_LOCAL_USAGE).length;
+  const excluded = intervals.length - priced.length - withoutUsage;
+  const available = priced.length > 0;
   const percent = sumPercentages(priced.map(interval => interval.consumedPercentagePoints));
   const sums = categories.map(category => priced.reduce((sum, interval) => sum + BigInt(interval.categories[category.key]!), 0n));
   const total = sums.reduce((sum, value) => sum + value, 0n);
   const rows = categories.map((category, index) => ({
     ...category,
-    usd: complete ? perPercent(String(sums[index]), percent, 12, 6) : null,
-    fullUsd: complete ? perPercent(String(sums[index] * 100n), percent, 12, 6) : null,
+    usd: available ? perPercent(String(sums[index]), percent, 12, 6) : null,
+    fullUsd: available ? perPercent(String(sums[index] * 100n), percent, 12, 6) : null,
     // Share is display-only; exact amounts remain in the USD strings.
-    share: complete && total > 0n ? Number(sums[index] * 10000n / total) / 100 : null,
+    share: available && total > 0n ? Number(sums[index] * 10000n / total) / 100 : null,
   }));
   return {
-    count: priced.length, rows,
-    totalUsd: complete ? perPercent(String(total), percent, 12, 6) : null,
-    totalFullUsd: complete ? perPercent(String(total * 100n), percent, 12, 6) : null,
-    reason: intervals.find(interval => interval.categories.reason)?.categories.reason ?? "No comparable priced intervals",
+    count: priced.length, withoutUsage, excluded, rows,
+    totalUsd: available ? perPercent(String(total), percent, 12, 6) : null,
+    totalFullUsd: available ? perPercent(String(total * 100n), percent, 12, 6) : null,
+    reason: intervals.find(interval => interval.categories.reason && interval.categories.reason !== NO_LOCAL_USAGE)?.categories.reason
+      ?? intervals.find(interval => interval.categories.reason)?.categories.reason ?? "No comparable priced intervals",
   };
 }
