@@ -77,10 +77,343 @@ fn read(store: &mut Store, now: &str, range: Range) -> dto::Response {
             Query {
                 range,
                 point_budget: None,
+                breakdown_metric: Default::default(),
             },
             time(now),
         )
         .unwrap()
+}
+
+fn local_usage(
+    store: &mut Store,
+    id: &str,
+    timestamp: Option<&str>,
+    model: Option<&str>,
+    total: i64,
+    project: Option<&str>,
+    parent: Option<&str>,
+) {
+    record(
+        store,
+        id,
+        json!({"type":"session_meta","payload":{"id":id,"cwd":project,"parent_thread_id":parent}}),
+    );
+    if let Some(model) = model {
+        record(
+            store,
+            id,
+            json!({"type":"turn_context","payload":{"turn_id":id,"model":model}}),
+        );
+    }
+    let tokens = json!({"input_tokens":total,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":total});
+    record(
+        store,
+        id,
+        json!({"type":"token_usage_record","timestamp":timestamp,"payload":{"thread_id":id,"turn_id":id,"response_id":id,"usage":tokens,"thread_token_usage":tokens}}),
+    );
+}
+
+#[test]
+fn dashboard_local_usage_without_quota_preserves_all_bounds_and_unknown_cost() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&temp.path().join("local.sqlite")).unwrap();
+    let large = 9_007_199_254_740_993;
+    local_usage(
+        &mut store,
+        "parent",
+        Some("2026-01-01T00:00:00Z"),
+        Some("priced"),
+        large,
+        Some("C:/work"),
+        None,
+    );
+    local_usage(
+        &mut store,
+        "at-start",
+        Some("2026-01-02T00:00:00Z"),
+        None,
+        19,
+        None,
+        None,
+    );
+    local_usage(
+        &mut store,
+        "child",
+        Some("2026-01-02T00:00:00.000000001Z"),
+        None,
+        7,
+        Some("C:/work"),
+        Some("parent"),
+    );
+    local_usage(
+        &mut store,
+        "end",
+        Some("2026-01-03T00:00:00Z"),
+        None,
+        11,
+        None,
+        None,
+    );
+    local_usage(
+        &mut store,
+        "future",
+        Some("2026-01-04T00:00:00Z"),
+        None,
+        13,
+        None,
+        None,
+    );
+    local_usage(
+        &mut store,
+        "untimed",
+        Some("2026-01-02T00:00:00Z"),
+        None,
+        17,
+        None,
+        None,
+    );
+    // Historical accepted rows can lack parsed observation time.
+    store
+        .connection
+        .execute(
+            "UPDATE observations SET time_seconds=NULL,time_nanos=NULL WHERE thread_id='untimed'",
+            [],
+        )
+        .unwrap();
+    price(&mut store);
+
+    let all = read(&mut store, "2026-01-03T00:00:00Z", Range::All);
+    assert!(all.chart.points.is_empty());
+    assert!(all.weekly.current_cycle.is_none());
+    assert_eq!(
+        all.local_usage.start,
+        time("2025-12-31T23:59:59.999999999Z")
+    );
+    assert_eq!(
+        all.local_usage
+            .summary
+            .tokens
+            .total_tokens
+            .known_tokens
+            .as_deref(),
+        Some("9007199254741030")
+    );
+    assert_eq!(all.local_usage.summary.observed_sessions, 4);
+    assert_eq!(all.local_usage.untimed_observations, 1);
+    assert_eq!(
+        all.local_usage
+            .summary
+            .estimated_cost
+            .known_subtotal
+            .as_deref(),
+        Some("9007199254740993000000")
+    );
+    assert!(!all.local_usage.summary.estimated_cost.complete);
+    assert_eq!(all.local_usage.points.len(), 3);
+    assert_eq!(
+        all.local_usage
+            .points
+            .iter()
+            .map(|point| point
+                .summary
+                .tokens
+                .total_tokens
+                .known_tokens
+                .as_deref()
+                .unwrap()
+                .parse::<i64>()
+                .unwrap())
+            .sum::<i64>(),
+        large + 7 + 11 + 19
+    );
+    assert!(all
+        .local_usage
+        .points
+        .iter()
+        .all(|point| point.index < all.local_usage.bin_count));
+    let json = serde_json::to_value(&all).unwrap();
+    assert_eq!(
+        json["localUsage"]["points"][0]["tokens"]["totalTokens"]["knownTokens"],
+        large.to_string()
+    );
+    assert_eq!(json["breakdowns"]["metric"], "tokens");
+
+    let day = read(&mut store, "2026-01-03T00:00:00Z", Range::Last24Hours);
+    assert_eq!(
+        day.local_usage
+            .summary
+            .tokens
+            .total_tokens
+            .known_tokens
+            .as_deref(),
+        Some("18")
+    );
+    assert_eq!(day.local_usage.summary.observed_sessions, 2);
+    assert!(day
+        .local_usage
+        .summary
+        .estimated_cost
+        .known_subtotal
+        .is_none());
+    assert!(!day.local_usage.summary.estimated_cost.complete);
+    assert_eq!(day.local_usage.points.len(), 2);
+    let current = read(&mut store, "2026-01-03T00:00:00Z", Range::CurrentCycle);
+    assert_eq!(
+        current.local_usage.summary.tokens.total_tokens.known_tokens,
+        all.local_usage.summary.tokens.total_tokens.known_tokens
+    );
+}
+
+#[test]
+fn dashboard_breakdowns_rank_full_range_keep_unknown_and_conserve_remainder() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&temp.path().join("ranked.sqlite")).unwrap();
+    for (index, model) in ["a", "b", "c", "d", "e", "f", "g"].into_iter().enumerate() {
+        let total = (index as i64 + 1) * 10;
+        local_usage(
+            &mut store,
+            model,
+            Some("2026-01-02T12:00:00Z"),
+            Some(model),
+            total,
+            Some(&format!("C:/ranking/{model}")),
+            None,
+        );
+        let rate = (7 - index).to_string();
+        store
+            .save_model_price_at(
+                model,
+                PriceInput {
+                    input: rate.clone(),
+                    cached_input: rate.clone(),
+                    cache_write: rate.clone(),
+                    output: rate,
+                    reasoning: None,
+                    reasoning_policy: ReasoningPolicy::Included,
+                    cache_write_policy: CacheWritePolicy::Unknown,
+                },
+                true,
+                (0, 0),
+            )
+            .unwrap();
+    }
+    while store.pricing_work_pending().unwrap() {
+        store.process_pricing_work().unwrap();
+    }
+    local_usage(
+        &mut store,
+        "unknown",
+        Some("2026-01-02T12:00:00Z"),
+        None,
+        3,
+        None,
+        None,
+    );
+    local_usage(
+        &mut store,
+        "outside",
+        Some("2026-01-01T00:00:00Z"),
+        Some("outside"),
+        1_000_000,
+        Some("C:/outside"),
+        None,
+    );
+    store.connection.execute("UPDATE sessions SET repository_state='confirmed',repository_common_directory='C:/ranking/g/.git' WHERE thread_id='g'", []).unwrap();
+    let tokens = read(&mut store, "2026-01-03T00:00:00Z", Range::Last24Hours);
+    assert_eq!(
+        tokens
+            .breakdowns
+            .models
+            .iter()
+            .map(|row| row.key.as_str())
+            .collect::<Vec<_>>(),
+        ["model:g", "model:f", "model:e", "model:d", "model:c", "unknown:", "other:"]
+    );
+    assert_eq!(
+        tokens
+            .breakdowns
+            .projects
+            .iter()
+            .map(|row| row.label.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "g",
+            "f",
+            "e",
+            "d",
+            "c",
+            "Unattributed project",
+            "Other projects"
+        ]
+    );
+    for rows in [&tokens.breakdowns.models, &tokens.breakdowns.projects] {
+        assert_eq!(
+            rows.iter()
+                .map(|row| row
+                    .tokens
+                    .known_tokens
+                    .as_deref()
+                    .unwrap()
+                    .parse::<i64>()
+                    .unwrap())
+                .sum::<i64>(),
+            283
+        );
+        assert_eq!(
+            rows.last().unwrap().tokens.known_tokens.as_deref(),
+            Some("30")
+        );
+        assert!(rows
+            .iter()
+            .find(|row| row.kind == "unknown")
+            .unwrap()
+            .estimated_cost
+            .known_subtotal
+            .is_none());
+    }
+    let costs = store
+        .dashboard_at(
+            Query {
+                range: Range::Last24Hours,
+                point_budget: Some(8),
+                breakdown_metric: dto::BreakdownMetric::Cost,
+            },
+            time("2026-01-03T00:00:00Z"),
+        )
+        .unwrap();
+    assert_eq!(
+        costs
+            .breakdowns
+            .models
+            .iter()
+            .map(|row| row.key.as_str())
+            .collect::<Vec<_>>(),
+        ["model:d", "model:c", "model:e", "model:b", "model:f", "unknown:", "other:"]
+    );
+    assert_eq!(
+        costs
+            .breakdowns
+            .models
+            .last()
+            .unwrap()
+            .estimated_cost
+            .known_subtotal
+            .as_deref(),
+        Some("140000000")
+    );
+    assert_eq!(
+        costs
+            .breakdowns
+            .models
+            .iter()
+            .filter_map(|row| row.estimated_cost.known_subtotal.as_deref())
+            .map(|amount| amount.parse::<i128>().unwrap())
+            .sum::<i128>(),
+        840_000_000
+    );
+    assert_eq!(costs.local_usage.bin_count, 1);
+    assert_eq!(costs.local_usage.points.len(), 1);
+    assert!(!costs.local_usage.summary.estimated_cost.complete);
 }
 
 #[test]
@@ -352,7 +685,8 @@ fn dashboard_downsampling_retains_actual_extrema_and_caps_boundary_overload() {
         assert_eq!(
             Query {
                 range: Range::All,
-                point_budget: Some(budget)
+                point_budget: Some(budget),
+                breakdown_metric: Default::default(),
             }
             .validate(),
             Err(ReadError::InvalidQuery)
@@ -361,7 +695,8 @@ fn dashboard_downsampling_retains_actual_extrema_and_caps_boundary_overload() {
     assert_eq!(
         Query {
             range: Range::All,
-            point_budget: None
+            point_budget: None,
+            breakdown_metric: Default::default(),
         }
         .validate(),
         Ok(512)
@@ -369,7 +704,8 @@ fn dashboard_downsampling_retains_actual_extrema_and_caps_boundary_overload() {
     assert_eq!(
         Query {
             range: Range::All,
-            point_budget: Some(15)
+            point_budget: Some(15),
+            breakdown_metric: Default::default(),
         }
         .validate(),
         Ok(1)
@@ -397,7 +733,8 @@ fn dashboard_empty_read_only_serialization_and_invalid_input() {
         &path,
         Query {
             range: Range::All,
-            point_budget: Some(8)
+            point_budget: Some(8),
+            breakdown_metric: Default::default(),
         }
     )
     .is_ok());
@@ -407,7 +744,8 @@ fn dashboard_empty_read_only_serialization_and_invalid_input() {
             &missing,
             Query {
                 range: Range::All,
-                point_budget: None
+                point_budget: None,
+                breakdown_metric: Default::default(),
             }
         )
         .unwrap_err(),
@@ -430,7 +768,8 @@ fn dashboard_range_boundaries_are_exact() {
         assert_eq!(
             Query {
                 range,
-                point_budget: None
+                point_budget: None,
+                breakdown_metric: Default::default(),
             }
             .start(now, None, None),
             Time {

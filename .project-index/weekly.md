@@ -29,3 +29,13 @@
 - Owner: `tests/weekly-ui.mjs`.
 - Responsibility: Exercise app navigation, interval displays, paging, pending selection/live changes, keyboard access, narrow layouts and failure states using mocked IPC.
 - Look here when: Verifying the Weekly History interface.
+
+## Dashboard projection
+- Owner: `src-tauri/src/dashboard.rs`, `src-tauri/src/storage/dashboard.rs`; checks: `src-tauri/src/storage/dashboard/tests.rs`.
+- Responsibility: Deliver weekly observations and global summaries with bounded quota charts and range-scoped local activity in one read snapshot.
+- Look here when: Changing dashboard range, precision, quota boundaries or delivery contracts.
+
+## Local dashboard activity
+- Owner: `src-tauri/src/storage/dashboard/usage.rs`.
+- Responsibility: Prepare sparse direct-usage bins, range totals and exact ranked model/project breakdowns independent of quota availability, preserving unknown and remainder groups.
+- Look here when: Changing local dashboard history, composition ranking or missing-quota behavior.

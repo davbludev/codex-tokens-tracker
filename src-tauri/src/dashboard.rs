@@ -23,6 +23,8 @@ pub enum Range {
 pub struct Query {
     pub range: Range,
     pub point_budget: Option<u32>,
+    #[serde(default)]
+    pub breakdown_metric: BreakdownMetric,
 }
 impl Query {
     pub fn validate(&self) -> Result<usize, weekly::ReadError> {
@@ -55,6 +57,64 @@ pub struct Response {
     pub global: aggregates::Summary,
     pub token_scope: &'static str,
     pub chart: Chart,
+    pub local_usage: LocalUsage,
+    pub breakdowns: Breakdowns,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BreakdownMetric {
+    #[default]
+    Tokens,
+    Cost,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageSummary {
+    pub tokens: aggregates::Tokens,
+    pub estimated_cost: aggregates::EstimatedCost,
+    pub observed_sessions: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsagePoint {
+    pub index: u32,
+    pub start: Time,
+    pub end: Time,
+    #[serde(flatten)]
+    pub summary: UsageSummary,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalUsage {
+    pub start: Time,
+    pub end: Time,
+    pub bin_count: u32,
+    pub summary: UsageSummary,
+    pub points: Vec<UsagePoint>,
+    pub untimed_observations: u64,
+    pub coverage_note: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Breakdown {
+    pub key: String,
+    pub label: String,
+    pub kind: &'static str,
+    pub tokens: aggregates::Category,
+    pub estimated_cost: aggregates::EstimatedCost,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Breakdowns {
+    pub metric: BreakdownMetric,
+    pub models: Vec<Breakdown>,
+    pub projects: Vec<Breakdown>,
 }
 
 #[derive(Clone, Debug, Serialize)]

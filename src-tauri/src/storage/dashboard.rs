@@ -9,6 +9,7 @@ use std::{
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
+mod usage;
 
 impl Store {
     pub fn read_dashboard(path: &Path, query: dto::Query) -> Result<dto::Response, ReadError> {
@@ -59,6 +60,16 @@ impl Store {
                 .map(|cycle| cycle.first_observation.time),
             earliest,
         );
+        let (local_usage, breakdowns) = usage::read(
+            &tx,
+            &query,
+            weekly
+                .current_cycle
+                .as_ref()
+                .map(|cycle| cycle.first_observation.time),
+            now,
+            bins as u32,
+        )?;
         let mut downsample = Downsample::new(query.range, start, now, bins);
         let mut projection = Projection::default();
         let mut timeline = Timeline::new(now, None, 1);
@@ -102,7 +113,7 @@ impl Store {
         })?;
         Ok(dto::Response { evaluated_at: now, weekly, global,
             token_scope: "All locally observed history; direct session usage counted once. Cached input and reasoning overlap other categories; do not add categories.",
-            chart: downsample.finish() })
+            chart: downsample.finish(), local_usage, breakdowns })
     }
 }
 
