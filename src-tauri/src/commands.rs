@@ -358,6 +358,7 @@ pub fn start(app: tauri::AppHandle, database: PathBuf, receive: mpsc::Receiver<p
             let deadline = work
                 .deadline()
                 .into_iter()
+                .chain(work.retention_deadline())
                 .chain(dirty.then_some(published + Duration::from_millis(100)))
                 .min();
             // With no queued debounce or publication, wait indefinitely for an event.

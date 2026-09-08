@@ -68,16 +68,18 @@ pub(super) fn read(
 ) -> Result<QuotaAnalysis, ReadError> {
     // Merge one grouped usage stream with canonical quota observations. Never
     // interpolate quota or run a usage-prefix query for every quota sample.
-    // Immutable valuation version wins. Otherwise apply exactly the existing
-    // effective-time / explicit first-price backfill rules, never latest price.
+    // Immutable valuation version wins. Otherwise apply exactly the writer's
+    // selection rules (effective time, explicit or first-price backfill, then
+    // the bounded reach-back), never the latest price.
     let sql = format!("SELECT o.time_seconds,o.time_nanos,COUNT(*),{},o.normalized,p.configuration FROM observations o
         LEFT JOIN observation_valuations v ON v.observation_id=o.id
         LEFT JOIN model_price_versions p ON p.id=COALESCE(v.version_id,
           (SELECT id FROM model_price_versions WHERE model=o.model AND (effective_seconds,effective_nanos)<=(o.time_seconds,o.time_nanos) ORDER BY effective_seconds DESC,effective_nanos DESC LIMIT 1),
           (SELECT version_id FROM model_price_backfills WHERE model=o.model),
-          (SELECT id FROM model_price_versions WHERE model=o.model AND backfill_before=1 ORDER BY effective_seconds,effective_nanos LIMIT 1))
+          (SELECT id FROM model_price_versions WHERE model=o.model AND backfill_before=1 ORDER BY effective_seconds,effective_nanos LIMIT 1),
+          (SELECT id FROM model_price_versions WHERE model=o.model AND (effective_seconds,effective_nanos)>(o.time_seconds,o.time_nanos) AND (effective_seconds-{},effective_nanos)<=(o.time_seconds,o.time_nanos) ORDER BY effective_seconds,effective_nanos LIMIT 1))
         WHERE o.accepted=1 AND (o.time_seconds,o.time_nanos)>(?1,?2) AND (o.time_seconds,o.time_nanos)<=(?3,?4)
-        GROUP BY o.id ORDER BY o.time_seconds,o.time_nanos,o.id", token_fields());
+        GROUP BY o.id ORDER BY o.time_seconds,o.time_nanos,o.id", token_fields(), crate::pricing::VALUATION_REACH_BACK_SECONDS);
     let mut statement = connection.prepare(&sql).map_err(|_| ReadError::Storage)?;
     let mut rows = statement
         .query(params![start.seconds, start.nanos, now.seconds, now.nanos])

@@ -1056,3 +1056,63 @@ fn dashboard_month_of_mixed_cost_history_reports_bounded_payload() {
     );
     eprintln!("dashboard mixed history: 30 days, 300 sessions, 8641 limits, 43200 accepted observations, {priced_rows} immutable valuations; {} returned points, {} boundary bins, {payload_bytes} serialized bytes, projection elapsed {elapsed:?}", response.chart.points.len(), response.chart.boundaries.len());
 }
+
+#[test]
+fn quota_hypotheses_apply_the_bounded_reach_back_before_valuation_persists() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("reach-back.sqlite");
+    let mut store = Store::open(&path).unwrap();
+    limit(&mut store, "2026-01-01T00:00:00Z", "10");
+    usage(&mut store, "recent", "2026-01-01T00:01:00Z", "priced");
+    limit(&mut store, "2026-01-01T00:03:00Z", "12");
+    usage(&mut store, "other", "2026-01-01T00:04:00Z", "late");
+    limit(&mut store, "2026-01-01T00:06:00Z", "14");
+    let configuration = PriceInput {
+        input: "1".into(),
+        cached_input: "1".into(),
+        cache_write: "1".into(),
+        output: "1".into(),
+        reasoning: None,
+        reasoning_policy: ReasoningPolicy::Included,
+        cache_write_policy: CacheWritePolicy::Additional,
+    };
+    // Two days later is inside the reach-back; eight days later is beyond it.
+    for (model, effective) in [
+        ("priced", "2026-01-03T00:00:00Z"),
+        ("late", "2026-01-09T00:00:00Z"),
+    ] {
+        store
+            .save_model_price_at(
+                model,
+                configuration.clone(),
+                false,
+                (time(effective).seconds, 0),
+            )
+            .unwrap();
+    }
+    assert!(store.pricing_work_pending().unwrap());
+    let expected = |store: &mut Store| {
+        let intervals = read(store, "2026-01-09T00:00:00Z", Range::All)
+            .quota_analysis
+            .intervals;
+        assert_eq!(intervals.len(), 2);
+        assert_eq!(
+            intervals[0].hypotheses[1].estimated_usd.as_deref(),
+            Some("1000000000000")
+        );
+        assert_eq!(
+            (
+                intervals[1].hypotheses[1].estimated_usd.as_deref(),
+                intervals[1].hypotheses[1].price_reason
+            ),
+            (None, Some("Unpriced usage: no applicable model price"))
+        );
+    };
+    expected(&mut store);
+    while store.pricing_work_pending().unwrap() {
+        store.process_pricing_work().unwrap();
+    }
+    assert!(store.observation_valuation(1).unwrap().is_some());
+    assert!(store.observation_valuation(2).unwrap().is_none());
+    expected(&mut store);
+}

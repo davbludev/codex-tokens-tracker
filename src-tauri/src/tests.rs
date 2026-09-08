@@ -2,6 +2,7 @@ use crate::{adapter, source, storage::Store};
 use std::{fs, io::Write};
 mod aggregates;
 mod pricing;
+mod retention;
 mod weekly;
 
 const ACTIVE: &str = include_str!("../../fixtures/codex/active-root.jsonl");
@@ -148,7 +149,7 @@ fn recovery_v2_migration_and_snapshot_query_plan() {
             .connection()
             .query_row::<i64, _, _>("PRAGMA user_version", [], |r| r.get(0))
             .unwrap(),
-        9
+        10
     );
     assert_eq!(
         store.snapshot().unwrap().direct_tokens.as_deref(),
@@ -1916,7 +1917,7 @@ fn version_one_migration_preserves_usage_and_promotes_its_pending_gap() {
         .connection()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 9);
+    assert_eq!(version, 10);
     assert_eq!(totals(&store), (4 * 26587, 0, 4));
 }
 

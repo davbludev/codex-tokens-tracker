@@ -3,6 +3,10 @@
 use crate::adapter::Tokens;
 use serde::{Deserialize, Serialize};
 
+/// Usage with no applicable price is still valued once by the model's earliest
+/// later version when that version becomes effective within this many seconds.
+pub const VALUATION_REACH_BACK_SECONDS: i64 = 7 * 86_400;
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
     #[error("Enter a nonnegative decimal price with at most six fractional digits within the supported range")]

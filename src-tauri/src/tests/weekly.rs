@@ -22,7 +22,7 @@ fn query(store: &mut Store, now: &str) -> weekly::Response {
         )
         .unwrap()
 }
-fn limit(
+pub(super) fn limit(
     store: &mut Store,
     timestamp: &str,
     percent: &str,

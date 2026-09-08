@@ -1,6 +1,6 @@
 use crate::{
     source::{self, Discovery},
-    storage::{Result, Store},
+    storage::{retention::RETENTION_BATCH, Result, Store},
 };
 use notify::{event::ModifyKind, Event, EventKind};
 use std::{
@@ -10,6 +10,8 @@ use std::{
 };
 
 pub const DEBOUNCE: Duration = Duration::from_millis(75);
+/// A caught-up retention pass reschedules itself this far ahead.
+pub const RETENTION_INTERVAL: Duration = Duration::from_secs(6 * 3600);
 const QUEUE_LIMIT: usize = 512;
 
 /// Bounded cooperative units: directory entries, one file batch, then accounting/hierarchy work.
@@ -28,6 +30,7 @@ pub struct Work {
     recovery_notice: bool,
     sweep: Option<SourceSweep>,
     sweep_requested: bool,
+    retention_due: Option<Instant>,
     pub discovered: u64,
     pub batches: u64,
     pub diagnostic: Option<String>,
@@ -70,6 +73,7 @@ impl Work {
             recovery_notice: false,
             sweep: None,
             sweep_requested: true,
+            retention_due: Some(Instant::now()),
             discovered: 0,
             batches: 0,
             diagnostic: None,
@@ -163,6 +167,15 @@ impl Work {
         self.debounce.values().copied().min()
     }
 
+    /// Separate from `deadline`: retention is periodic housekeeping, not work
+    /// that makes the coordinator busy or changes its progress phase.
+    pub fn retention_deadline(&self) -> Option<Instant> {
+        if self.paused {
+            return None;
+        }
+        self.retention_due
+    }
+
     pub fn busy(&self) -> bool {
         !self.paused
             && (!self.discovery.is_empty()
@@ -210,9 +223,9 @@ impl Work {
             self.discovery.push_back(Discovery::new(self.roots.clone()));
             self.recovery = false;
         }
-        for _ in 0..5 {
+        for _ in 0..6 {
             let lane = self.lane;
-            self.lane = (self.lane + 1) % 5;
+            self.lane = (self.lane + 1) % 6;
             match lane {
                 0 if !self.discovery.is_empty() && self.reads.len() <= QUEUE_LIMIT - 64 => {
                     let discovery = self.discovery.front_mut().unwrap();
@@ -284,6 +297,18 @@ impl Work {
                     // conservatively, and stop scheduling once the queue is drained.
                     store.process_pricing_work()?;
                     self.pricing = store.pricing_work_pending()?;
+                    return Ok(true);
+                }
+                5 if self.retention_due.is_some_and(|due| due <= now) => {
+                    let clock = time::OffsetDateTime::now_utc();
+                    let retired = store.retire_expired(
+                        (clock.unix_timestamp(), clock.nanosecond()),
+                        RETENTION_BATCH,
+                    )?;
+                    if retired.observations == 0 && retired.samples == 0 {
+                        self.retention_due = Some(now + RETENTION_INTERVAL);
+                        return Ok(false);
+                    }
                     return Ok(true);
                 }
                 _ => (),

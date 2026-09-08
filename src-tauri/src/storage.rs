@@ -7,6 +7,7 @@ pub(crate) mod aggregates;
 mod dashboard;
 mod hierarchy;
 pub(crate) mod pricing;
+pub(crate) mod retention;
 mod settings;
 pub(crate) mod weekly;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
@@ -100,7 +101,7 @@ impl Store {
         let mut connection = Connection::open(path)?;
         connection.busy_timeout(std::time::Duration::from_secs(3))?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > 9 {
+        if version > 10 {
             return Err(Error::Schema);
         }
         if version == 0 {
@@ -168,6 +169,11 @@ impl Store {
         if version < 9 {
             let tx = connection.transaction()?;
             tx.execute_batch(include_str!("../migrations/009_model_price_backfills.sql"))?;
+            tx.commit()?;
+        }
+        if version < 10 {
+            let tx = connection.transaction()?;
+            tx.execute_batch(include_str!("../migrations/010_retention.sql"))?;
             tx.commit()?;
         }
         Ok(Self { connection })
@@ -533,7 +539,13 @@ fn apply_record(
         }
         Ok(Record::Legacy { timestamp, windows }) => {
             tx.execute("UPDATE sources SET legacy=1 WHERE path=?", [path])?;
-            for (bucket, position, window) in windows {
+            let retired = match (timestamp.as_deref(), retention::floor(&tx)?) {
+                (Some(value), Some(floor)) => {
+                    adapter::observation_time(value).is_ok_and(|time| time < floor)
+                }
+                _ => false,
+            };
+            for (bucket, position, window) in windows.into_iter().filter(|_| !retired) {
                 let normalized = serde_json::to_string(&(
                     &bucket,
                     window.window_minutes,
@@ -764,6 +776,17 @@ fn ingest_usage(
         }
         return Ok(());
     }
+    // Retired history is never re-imported by a replay; the source still
+    // learns its thread identity so identity conflicts remain detectable.
+    if let (Ok(parsed), Some(floor)) = (time, retention::floor(tx)?) {
+        if parsed < floor {
+            tx.execute(
+                "UPDATE sources SET thread_id=COALESCE(thread_id,?) WHERE path=?",
+                params![usage.thread_id, path],
+            )?;
+            return Ok(());
+        }
+    }
     tx.execute(
         "INSERT INTO sessions(thread_id) VALUES(?) ON CONFLICT(thread_id) DO UPDATE SET is_placeholder=0",
         [&usage.thread_id],
@@ -819,7 +842,8 @@ fn observation(row: &rusqlite::Row<'_>) -> rusqlite::Result<Observation> {
 
 const OBSERVATION_COLUMNS: &str =
     "id,normalized,time_seconds,time_nanos,source_path,source_generation,source_offset";
-const GAP: &str = "Usage pending: historical gap or ambiguous ordering; confirmed usage retained";
+pub(super) const GAP: &str =
+    "Usage pending: historical gap or ambiguous ordering; confirmed usage retained";
 
 impl Observation {
     fn facts(&self) -> accounting::ObservationFacts<'_> {

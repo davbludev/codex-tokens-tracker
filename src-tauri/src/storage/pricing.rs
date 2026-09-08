@@ -278,6 +278,12 @@ pub(super) fn value_observation(tx: &Transaction<'_>, id: i64) -> Result<()> {
             }
         }
     };
+    let selected = match selected {
+        Some(value) => Some(value),
+        // Bounded reach-back: the earliest later version, if it becomes
+        // effective within the window after this observation.
+        None => tx.query_row(&format!("SELECT id,model,effective_seconds,effective_nanos,backfill_before,configuration FROM model_price_versions WHERE model=? AND (effective_seconds,effective_nanos)>(?,?) AND (effective_seconds-{},effective_nanos)<=(?,?) ORDER BY effective_seconds,effective_nanos LIMIT 1", pricing::VALUATION_REACH_BACK_SECONDS), params![model,seconds,nanos,seconds,nanos], version).optional()?,
+    };
     let Some(selected) = selected else {
         return Ok(());
     };

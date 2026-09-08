@@ -6,7 +6,7 @@ use crate::{
 };
 use serde_json::json;
 
-fn prices() -> PriceInput {
+pub(super) fn prices() -> PriceInput {
     PriceInput {
         input: "1".into(),
         cached_input: "0.5".into(),
@@ -17,7 +17,7 @@ fn prices() -> PriceInput {
         cache_write_policy: CacheWritePolicy::Unknown,
     }
 }
-fn tokens(values: [i64; 6]) -> Tokens {
+pub(super) fn tokens(values: [i64; 6]) -> Tokens {
     let [input, cached, writes, output, reasoning, total] = values.map(Counter::Known);
     Tokens {
         input_tokens: input,
@@ -28,10 +28,10 @@ fn tokens(values: [i64; 6]) -> Tokens {
         total_tokens: total,
     }
 }
-fn time(value: &str) -> (i64, u32) {
+pub(super) fn time(value: &str) -> (i64, u32) {
     adapter::observation_time(value).unwrap()
 }
-fn context(store: &mut Store, path: &str, thread: &str, model: Option<&str>) {
+pub(super) fn context(store: &mut Store, path: &str, thread: &str, model: Option<&str>) {
     record_in_store(
         store,
         path,
@@ -43,7 +43,13 @@ fn context(store: &mut Store, path: &str, thread: &str, model: Option<&str>) {
         &json!({"type":"turn_context","payload":{"turn_id":"turn","model":model}}),
     );
 }
-fn usage(store: &mut Store, path: &str, thread: &str, sequence: i64, timestamp: &str) -> i64 {
+pub(super) fn usage(
+    store: &mut Store,
+    path: &str,
+    thread: &str,
+    sequence: i64,
+    timestamp: &str,
+) -> i64 {
     let usage = tokens([100, 20, 0, 40, 10, 140]);
     let endpoint = tokens([100, 20, 0, 40, 10, 140].map(|n| n * sequence));
     record_in_store(
@@ -60,7 +66,7 @@ fn usage(store: &mut Store, path: &str, thread: &str, sequence: i64, timestamp: 
         )
         .unwrap()
 }
-fn drain(store: &mut Store) {
+pub(super) fn drain(store: &mut Store) {
     for _ in 0..1000 {
         if !store.pricing_work_pending().unwrap() {
             return;
@@ -474,29 +480,40 @@ fn pricing_category_policies_unknown_missing_zero_and_overflow() {
 }
 
 #[test]
-fn pricing_source_boundaries_edits_and_no_implicit_backfill() {
+fn pricing_source_boundaries_edits_and_bounded_reach_back() {
     let temp = tempfile::tempdir().unwrap();
     let mut store = Store::open(&temp.path().join("pricing.sqlite")).unwrap();
     context(&mut store, "a", "thread", Some("model"));
+    // Exactly one second beyond the seven-day reach-back stays unpriced;
+    // usage inside the window is valued once by the first version.
+    let beyond = usage(&mut store, "a", "thread", 1, "2025-12-25T00:00:00Z");
+    let edge = usage(&mut store, "a", "thread", 2, "2025-12-25T00:00:01Z");
     let old = usage(
         &mut store,
         "a",
         "thread",
-        1,
+        3,
         "2026-01-01T00:00:00.999999999Z",
     );
     let first = store
         .save_model_price_at("model", prices(), false, time("2026-01-01T00:00:01Z"))
         .unwrap();
-    let boundary = usage(&mut store, "a", "thread", 2, "2026-01-01T02:00:01+02:00");
+    let boundary = usage(&mut store, "a", "thread", 4, "2026-01-01T02:00:01+02:00");
     let mut changed = prices();
     changed.input = "2".into();
     let second = store
         .save_model_price_at("model", changed, false, time("2026-01-01T00:00:02Z"))
         .unwrap();
-    let after = usage(&mut store, "a", "thread", 3, "2026-01-01T00:00:02Z");
+    let after = usage(&mut store, "a", "thread", 5, "2026-01-01T00:00:02Z");
     drain(&mut store);
-    assert!(store.observation_valuation(old).unwrap().is_none());
+    assert!(store.observation_valuation(beyond).unwrap().is_none());
+    for id in [edge, old] {
+        let value = store.observation_valuation(id).unwrap().unwrap();
+        assert_eq!(
+            (value.version_id, value.amount.as_str()),
+            (first.id, "210000000")
+        );
+    }
     let value = store.observation_valuation(boundary).unwrap().unwrap();
     assert_eq!(
         (value.version_id, value.amount.as_str()),
@@ -516,7 +533,9 @@ fn pricing_source_boundaries_edits_and_no_implicit_backfill() {
     assert!(store
         .save_model_price_at("model", prices(), true, time("2026-01-01T00:00:03Z"))
         .is_err());
-    assert_eq!(super::totals(&store), (420, 0, 3));
+    assert_eq!(super::totals(&store), (140 * 5, 0, 5));
+    // The bounded reach-back leaves older usage available for explicit backfill.
+    assert!(store.pricing_models(None).unwrap()[0].backfill_available);
 }
 
 #[test]
@@ -524,13 +543,8 @@ fn pricing_late_backfill_values_only_older_unpriced_usage_with_the_first_price()
     let temp = tempfile::tempdir().unwrap();
     let mut store = Store::open(&temp.path().join("pricing.sqlite")).unwrap();
     context(&mut store, "a", "thread", Some("model"));
-    let old = usage(
-        &mut store,
-        "a",
-        "thread",
-        1,
-        "2026-01-01T00:00:00.999999999Z",
-    );
+    // Older than the reach-back window, so only an explicit backfill values it.
+    let old = usage(&mut store, "a", "thread", 1, "2025-12-20T00:00:00Z");
     let first = store
         .save_model_price_at("model", prices(), false, time("2026-01-01T00:00:01Z"))
         .unwrap();
