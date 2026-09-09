@@ -110,15 +110,44 @@ export type DashboardResponse = {
   tokenScope: string;
   chart: DashboardChart;
   localUsage: LocalUsage;
-  breakdowns: { metric: BreakdownMetric; models: UsageBreakdown[]; projects: UsageBreakdown[] };
+  breakdowns: { metric: BreakdownMetric; models: UsageBreakdown[]; projects: UsageBreakdown[]; modelCosts: ModelCost[]; categoryTotals: CategoryCosts };
+  turnActivity: TurnActivity;
   quotaAnalysis: QuotaAnalysis;
 };
 
 export type QuotaHypothesis = { mask: number; writesIncluded: boolean; tokens: string | null; estimatedUsd: string | null; tokenReason: string | null; priceReason: string | null };
-/** Exact integer trillionths of USD per category at each observation's own model price; all null when any usage is unpriced. */
-export type QuotaCategoryCosts = { input: string | null; cachedInput: string | null; cacheWrites: string | null; output: string | null; reason: string | null };
-export type QuotaInterval = { start: ObservationTime; end: ObservationTime; consumedPercentagePoints: string; tokens: GlobalSummary["tokens"]; hypotheses: QuotaHypothesis[]; categories: QuotaCategoryCosts };
+/** Exact integer trillionths of USD per category at each observation's own model price; all null when the scope has no usable split. */
+export type CategoryCosts = { input: string | null; cachedInput: string | null; cacheWrites: string | null; output: string | null; reason: string | null };
+export type QuotaInterval = { start: ObservationTime; end: ObservationTime; consumedPercentagePoints: string; tokens: GlobalSummary["tokens"]; hypotheses: QuotaHypothesis[]; categories: CategoryCosts };
 export type QuotaAnalysis = { intervals: QuotaInterval[]; totalIntervals: number };
+
+export type TurnPoint = { index: number; turns: number; tokens: TokenCategory; estimatedCost: GlobalSummary["estimatedCost"] };
+/** One model paired with the reasoning effort its turns ran at. */
+export type TurnSeries = {
+  key: string;
+  label: string;
+  model: string | null;
+  /** The source's own wording, never a normalized or invented level. */
+  effort: string | null;
+  kind: "combination" | "other" | "unattributed";
+  turns: number;
+  acceptedObservations: number;
+  /** Null when folding made the distinct set unrecoverable. */
+  observedSessions: number | null;
+  tokens: TokenCategory;
+  estimatedCost: GlobalSummary["estimatedCost"];
+  points: TurnPoint[];
+};
+export type TurnActivity = {
+  start: ObservationTime;
+  end: ObservationTime;
+  binCount: number;
+  totalTurns: number;
+  combinations: number;
+  turnsWithoutIdentity: number;
+  series: TurnSeries[];
+  coverageNote: string;
+};
 
 export type LocalUsageSummary = Pick<GlobalSummary, "tokens" | "estimatedCost" | "observedSessions">;
 export type UsageBin = LocalUsageSummary & { index: number; start: ObservationTime; end: ObservationTime };
@@ -130,6 +159,18 @@ export type LocalUsage = {
   points: UsageBin[];
   untimedObservations: number;
   coverageNote: string;
+};
+/** The four category amounts add up exactly to `estimatedCost.knownSubtotal`. */
+export type ModelCost = {
+  key: string;
+  label: string;
+  kind: "model" | "unknown" | "other";
+  tokens: GlobalSummary["tokens"];
+  estimatedCost: GlobalSummary["estimatedCost"];
+  categories: CategoryCosts;
+  acceptedObservations: number;
+  /** Null when folding made the distinct set unrecoverable. */
+  observedSessions: number | null;
 };
 export type UsageBreakdown = {
   key: string;

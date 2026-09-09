@@ -117,8 +117,20 @@ struct ThreadSpawn {
 pub struct Context {
     pub turn_id: String,
     pub model: Option<String>,
+    /// Configured reasoning effort for this turn, as the source spelled it.
+    pub effort: Option<String>,
     pub cwd: Option<String>,
     pub workspace_roots: Option<Vec<String>>,
+}
+
+impl Context {
+    /// An absent, blank or implausibly long effort is unavailable, never invented.
+    pub fn observed_effort(&self) -> Option<&str> {
+        self.effort
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && value.len() <= 64)
+    }
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LimitWindow {

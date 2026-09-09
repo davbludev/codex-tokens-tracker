@@ -37,11 +37,18 @@ monitored folder in **Settings**: a verification build or inherited test
 `CODEX_HOME` can point at fixture data instead of your real session history.
 
 The dashboard defaults to seven days, with token and cost charts independent of
-weekly quota availability. Model and project breakdowns include the top five,
-remaining usage, and unattributed usage. Exact values remain available through
-inspection controls. Cost requires configured prices; unpriced usage is unknown,
-and partial estimates show an incomplete known subtotal. Model Pricing discovers
-all model IDs from logs and refreshes automatically as new models appear.
+weekly quota availability. **Cost by model** splits each model's estimated cost
+into uncached input, cached input, cache-write and output amounts that add up to
+that model's total; see [Cost by model](docs/model-costs.md). **Turns by model
+and reasoning** counts the turns behind that spend, one series per model and
+reasoning-effort combination, with tokens and cost per turn; see
+[Turns by model and reasoning](docs/turns.md). The project
+breakdown includes the top five, remaining usage, and unattributed usage. Exact
+values remain available through inspection controls. Cost requires configured
+prices; unpriced usage is unknown, and partial estimates show an incomplete
+known subtotal. Model Pricing discovers all model IDs from logs and refreshes
+automatically as new models appear. The weekly-quota research panels sit in a
+collapsed **Advanced** block at the bottom of the page.
 
 The monitor discovers `sessions` and `archived_sessions` under `CODEX_HOME`,
 or the user's `.codex` directory. Native watches are registered before bounded
@@ -90,6 +97,11 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib
 npm run build
 node docs/research/check-fixtures.mjs
 ```
+
+Browser checks live in `tests/*-ui.mjs`; set `PLAYWRIGHT_MODULE` to an external
+Playwright installation if this project does not have one.
+`node tests/dashboard-preview.mjs` writes design-review screenshots of the whole
+dashboard against a realistic fixture into `docs/preview/`.
 
 The Rust checks cover explicit deltas, cross-file replay, restart/checkpoints,
 transaction rollback, incomplete lines, malformed sources, identity conflicts,

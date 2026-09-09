@@ -1,11 +1,11 @@
 //! Disjoint quota intervals with per-observation, version-aware hypothesis prices.
-mod categories;
 mod hypotheses;
 use crate::{
     aggregates::{Category, Tokens},
     dashboard::{QuotaAnalysis, QuotaInterval},
     storage::{
         aggregates::{row_tokens, token_fields},
+        dashboard::categories,
         weekly,
     },
     weekly::{decimal, ReadError, Sample, Time, Timeline},

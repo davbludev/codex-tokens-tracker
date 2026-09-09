@@ -1182,3 +1182,611 @@ fn quota_category_costs_use_each_observations_model_price_or_stay_unavailable() 
         [Some("7000000000000"), Some("0"), Some("0"), Some("0"), None]
     );
 }
+
+fn categorized_usage(
+    store: &mut Store,
+    id: &str,
+    timestamp: &str,
+    model: Option<&str>,
+    categories: [i64; 5],
+) {
+    record(
+        store,
+        id,
+        json!({"type":"session_meta","payload":{"id":id,"cwd":format!("C:/costs/{id}")}}),
+    );
+    if let Some(model) = model {
+        record(
+            store,
+            id,
+            json!({"type":"turn_context","payload":{"turn_id":id,"model":model}}),
+        );
+    }
+    let [input, cached, writes, output, reasoning] = categories;
+    let tokens = json!({"input_tokens":input,"cached_input_tokens":cached,"cache_write_input_tokens":writes,"output_tokens":output,"reasoning_output_tokens":reasoning,"total_tokens":input+output});
+    record(
+        store,
+        id,
+        json!({"type":"token_usage_record","timestamp":timestamp,"payload":{"thread_id":id,"turn_id":id,"response_id":id,"usage":tokens,"thread_token_usage":tokens}}),
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn save_price(
+    store: &mut Store,
+    model: &str,
+    input: &str,
+    cached: &str,
+    write: &str,
+    output: &str,
+    reasoning: Option<&str>,
+    writes: CacheWritePolicy,
+) {
+    store
+        .save_model_price_at(
+            model,
+            PriceInput {
+                input: input.into(),
+                cached_input: cached.into(),
+                cache_write: write.into(),
+                output: output.into(),
+                reasoning: reasoning.map(str::to_owned),
+                reasoning_policy: if reasoning.is_some() {
+                    ReasoningPolicy::Separate
+                } else {
+                    ReasoningPolicy::Included
+                },
+                cache_write_policy: writes,
+            },
+            true,
+            (0, 0),
+        )
+        .unwrap();
+    while store.pricing_work_pending().unwrap() {
+        store.process_pricing_work().unwrap();
+    }
+}
+
+fn split(row: &dto::ModelCost) -> [Option<&str>; 4] {
+    [
+        row.categories.input.as_deref(),
+        row.categories.cached_input.as_deref(),
+        row.categories.cache_writes.as_deref(),
+        row.categories.output.as_deref(),
+    ]
+}
+
+#[test]
+fn model_costs_split_each_models_subtotal_by_category_under_its_own_policies() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&temp.path().join("model-costs.sqlite")).unwrap();
+    categorized_usage(
+        &mut store,
+        "alpha",
+        "2026-01-02T12:00:00Z",
+        Some("alpha"),
+        [1000, 400, 100, 200, 50],
+    );
+    categorized_usage(
+        &mut store,
+        "beta",
+        "2026-01-02T12:00:00Z",
+        Some("beta"),
+        [2000, 500, 200, 100, 40],
+    );
+    categorized_usage(
+        &mut store,
+        "nameless",
+        "2026-01-02T12:00:00Z",
+        None,
+        [7, 0, 0, 3, 0],
+    );
+    save_price(
+        &mut store,
+        "alpha",
+        "2",
+        "0.5",
+        "3",
+        "4",
+        None,
+        CacheWritePolicy::Additional,
+    );
+    save_price(
+        &mut store,
+        "beta",
+        "1",
+        "0.25",
+        "2",
+        "8",
+        Some("16"),
+        CacheWritePolicy::IncludedInputDisjoint,
+    );
+
+    let response = read(&mut store, "2026-01-03T00:00:00Z", Range::Last24Hours);
+    let rows = &response.breakdowns.model_costs;
+    assert_eq!(
+        rows.iter().map(|row| row.key.as_str()).collect::<Vec<_>>(),
+        ["model:beta", "model:alpha", "unknown:"],
+        "priced models rank by estimated cost; unknown attribution stays last"
+    );
+
+    // beta: 1300 fresh input, 500 cached, 200 writes taken out of input, then
+    // 60 output plus 40 separately priced reasoning tokens.
+    let beta = &rows[0];
+    assert_eq!(
+        split(beta),
+        [
+            Some("1300000000"),
+            Some("125000000"),
+            Some("400000000"),
+            Some("1120000000")
+        ]
+    );
+    // alpha: cache writes are additional to input, reasoning is inside output.
+    let alpha = &rows[1];
+    assert_eq!(
+        split(alpha),
+        [
+            Some("1200000000"),
+            Some("200000000"),
+            Some("300000000"),
+            Some("800000000")
+        ]
+    );
+    for row in [beta, alpha] {
+        let total: i128 = split(row)
+            .into_iter()
+            .map(|amount| amount.unwrap().parse::<i128>().unwrap())
+            .sum();
+        assert_eq!(
+            Some(total.to_string()),
+            row.estimated_cost.known_subtotal,
+            "the four amounts reconstruct the model's known cost subtotal"
+        );
+        assert!(row.estimated_cost.complete && row.categories.reason.is_none());
+        assert_eq!(row.accepted_observations, 1);
+        assert_eq!(row.observed_sessions, Some(1));
+    }
+    assert_eq!(
+        [
+            beta.tokens.input_tokens.known_tokens.as_deref(),
+            beta.tokens.cached_input_tokens.known_tokens.as_deref(),
+            beta.tokens.cache_write_tokens.known_tokens.as_deref(),
+            beta.tokens.output_tokens.known_tokens.as_deref(),
+            beta.tokens.reasoning_tokens.known_tokens.as_deref(),
+        ],
+        [
+            Some("2000"),
+            Some("500"),
+            Some("200"),
+            Some("100"),
+            Some("40")
+        ]
+    );
+
+    let unknown = &rows[2];
+    assert_eq!(unknown.label, "Unknown model");
+    assert!(unknown.estimated_cost.known_subtotal.is_none() && !unknown.estimated_cost.complete);
+    assert_eq!(
+        unknown.categories.reason,
+        Some("Unpriced usage: no applicable model price")
+    );
+    assert_eq!(
+        unknown.tokens.total_tokens.known_tokens.as_deref(),
+        Some("10")
+    );
+
+    // Unknown-model usage leaves the split of the priced remainder intact.
+    let totals = &response.breakdowns.category_totals;
+    assert_eq!(
+        [
+            totals.input.as_deref(),
+            totals.cached_input.as_deref(),
+            totals.cache_writes.as_deref(),
+            totals.output.as_deref(),
+        ],
+        [
+            Some("2500000000"),
+            Some("325000000"),
+            Some("700000000"),
+            Some("1920000000")
+        ]
+    );
+    assert_eq!(totals.reason, None);
+    assert_eq!(
+        response.breakdowns.models[0].estimated_cost.known_subtotal,
+        beta.estimated_cost.known_subtotal,
+        "the cost table and the ranked breakdown agree on a model's subtotal"
+    );
+}
+
+#[test]
+fn model_costs_fold_the_remainder_and_keep_partly_priced_models_honest() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&temp.path().join("model-fold.sqlite")).unwrap();
+    for index in 0..10i64 {
+        let model = format!("m{index:02}");
+        categorized_usage(
+            &mut store,
+            &model,
+            "2026-01-02T12:00:00Z",
+            Some(&model),
+            [(index + 1) * 100, 0, 0, 0, 0],
+        );
+        save_price(
+            &mut store,
+            &model,
+            "1",
+            "1",
+            "1",
+            "1",
+            None,
+            CacheWritePolicy::Unknown,
+        );
+    }
+    // A second observation for the busiest model, with cache writes its price
+    // version cannot interpret, so it is accepted but never valued.
+    categorized_usage(
+        &mut store,
+        "m09-again",
+        "2026-01-02T13:00:00Z",
+        Some("m09"),
+        [500, 0, 50, 0, 0],
+    );
+    while store.pricing_work_pending().unwrap() {
+        store.process_pricing_work().unwrap();
+    }
+
+    let response = read(&mut store, "2026-01-03T00:00:00Z", Range::Last24Hours);
+    let rows = &response.breakdowns.model_costs;
+    assert_eq!(rows.len(), 9, "eight named models plus one folded remainder");
+    assert_eq!(
+        (rows[8].key.as_str(), rows[8].label.as_str()),
+        ("other:", "Other models (2)")
+    );
+    assert_eq!(
+        rows[8].tokens.total_tokens.known_tokens.as_deref(),
+        Some("300"),
+        "the folded row conserves the remaining tokens exactly"
+    );
+    assert_eq!(rows[8].accepted_observations, 2);
+    assert_eq!(
+        rows[8].categories.input.as_deref(),
+        Some("300000000"),
+        "folded amounts add up rather than being dropped"
+    );
+
+    let busiest = &rows[0];
+    assert_eq!(busiest.key, "model:m09");
+    assert_eq!(busiest.accepted_observations, 2);
+    assert!(
+        !busiest.estimated_cost.complete,
+        "an observation still waiting for its valuation stays visibly incomplete"
+    );
+    assert_eq!(
+        busiest.categories.input.as_deref(),
+        busiest.estimated_cost.known_subtotal.as_deref(),
+        "the split covers exactly the known subtotal, never the unvalued remainder"
+    );
+    assert_eq!(busiest.categories.input.as_deref(), Some("1000000000"));
+    assert_eq!(
+        busiest.tokens.total_tokens.known_tokens.as_deref(),
+        Some("1500")
+    );
+}
+
+fn turn_context(store: &mut Store, thread: &str, turn: &str, model: &str, effort: Option<&str>) {
+    record(
+        store,
+        thread,
+        json!({"type":"turn_context","payload":{"turn_id":turn,"model":model,"effort":effort}}),
+    );
+}
+
+/// `usage` is the turn's own delta; `cumulative` is the thread total it reaches.
+fn turn_usage(
+    store: &mut Store,
+    thread: &str,
+    turn: Option<&str>,
+    timestamp: &str,
+    input: i64,
+    cumulative: i64,
+) {
+    let counters = |value: i64| {
+        json!({"input_tokens":value,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":value})
+    };
+    record(
+        store,
+        thread,
+        json!({"type":"token_usage_record","timestamp":timestamp,"payload":{"thread_id":thread,"turn_id":turn,"response_id":format!("{thread}-{}-{timestamp}",turn.unwrap_or("anonymous")),"usage":counters(input),"thread_token_usage":counters(cumulative)}}),
+    );
+}
+
+fn session(store: &mut Store, thread: &str) {
+    record(
+        store,
+        thread,
+        json!({"type":"session_meta","payload":{"id":thread}}),
+    );
+}
+
+fn series_totals(series: &dto::TurnSeries) -> (u64, i64) {
+    (
+        series.points.iter().map(|point| point.turns).sum(),
+        series
+            .points
+            .iter()
+            .map(|point| {
+                point
+                    .tokens
+                    .known_tokens
+                    .as_deref()
+                    .unwrap_or("0")
+                    .parse::<i64>()
+                    .unwrap()
+            })
+            .sum(),
+    )
+}
+
+#[test]
+fn turn_activity_counts_turns_per_model_and_reasoning_and_bins_them_once() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&temp.path().join("turns.sqlite")).unwrap();
+
+    session(&mut store, "s1");
+    turn_context(&mut store, "s1", "t1", "alpha", Some("high"));
+    turn_usage(&mut store, "s1", Some("t1"), "2026-01-02T12:00:00Z", 100, 100);
+    turn_usage(&mut store, "s1", Some("t1"), "2026-01-02T12:01:00Z", 100, 200);
+    turn_context(&mut store, "s1", "t2", "alpha", Some("high"));
+    turn_usage(&mut store, "s1", Some("t2"), "2026-01-02T12:30:00Z", 100, 300);
+    turn_context(&mut store, "s1", "t3", "alpha", Some("low"));
+    turn_usage(&mut store, "s1", Some("t3"), "2026-01-02T13:00:00Z", 150, 450);
+
+    session(&mut store, "s2");
+    turn_context(&mut store, "s2", "t4", "beta", Some("medium"));
+    turn_usage(&mut store, "s2", Some("t4"), "2026-01-02T14:05:00Z", 250, 250);
+    turn_context(&mut store, "s2", "t5", "beta", Some("medium"));
+    turn_usage(&mut store, "s2", Some("t5"), "2026-01-02T14:20:00Z", 250, 500);
+
+    session(&mut store, "s3");
+    turn_context(&mut store, "s3", "t6", "beta", None);
+    turn_usage(&mut store, "s3", Some("t6"), "2026-01-02T15:00:00Z", 120, 120);
+
+    // No turn context and no turn identity: neither the model nor the reasoning
+    // can be attributed, and the observation stands as its own turn.
+    session(&mut store, "s4");
+    turn_usage(&mut store, "s4", None, "2026-01-02T16:00:00Z", 90, 90);
+
+    let response = read(&mut store, "2026-01-03T00:00:00Z", Range::Last24Hours);
+    let activity = &response.turn_activity;
+    assert_eq!(activity.bin_count, 96);
+    assert_eq!(activity.total_turns, 7);
+    assert_eq!(activity.combinations, 5);
+    assert_eq!(activity.turns_without_identity, 1);
+    assert_eq!(
+        activity
+            .series
+            .iter()
+            .map(|series| (series.key.as_str(), series.turns))
+            .collect::<Vec<_>>(),
+        [
+            ("model:beta|effort:medium", 2),
+            ("model:alpha|effort:high", 2),
+            ("model:alpha|effort:low", 1),
+            ("model:beta|effort:", 1),
+            ("unknown:|effort:", 1),
+        ],
+        "turns rank first, then the work those turns carried"
+    );
+    assert_eq!(
+        activity
+            .series
+            .iter()
+            .map(|series| series.label.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "beta · medium",
+            "alpha · high",
+            "alpha · low",
+            "beta · reasoning unavailable",
+            "Unknown model · reasoning unavailable"
+        ]
+    );
+    assert_eq!(
+        activity
+            .series
+            .iter()
+            .map(|series| (series.model.as_deref(), series.effort.as_deref()))
+            .collect::<Vec<_>>(),
+        [
+            (Some("beta"), Some("medium")),
+            (Some("alpha"), Some("high")),
+            (Some("alpha"), Some("low")),
+            (Some("beta"), None),
+            (None, None)
+        ]
+    );
+
+    let busiest = &activity.series[1];
+    assert_eq!(busiest.accepted_observations, 3);
+    assert_eq!(busiest.observed_sessions, Some(1));
+    assert_eq!(busiest.tokens.known_tokens.as_deref(), Some("300"));
+    // A turn is charted where it began, so its second observation joins the
+    // first bin instead of opening one of its own.
+    assert_eq!(
+        busiest
+            .points
+            .iter()
+            .map(|point| (
+                point.index,
+                point.turns,
+                point.tokens.known_tokens.as_deref()
+            ))
+            .collect::<Vec<_>>(),
+        [(47, 1, Some("200")), (49, 1, Some("100"))]
+    );
+    for series in &activity.series {
+        assert_eq!(
+            series_totals(series),
+            (
+                series.turns,
+                series.tokens.known_tokens.as_deref().unwrap().parse().unwrap()
+            ),
+            "every bin adds up to the series total for {}",
+            series.key
+        );
+    }
+    assert_eq!(
+        activity
+            .series
+            .iter()
+            .map(|series| series.turns)
+            .sum::<u64>(),
+        activity.total_turns
+    );
+    assert!(activity
+        .series
+        .iter()
+        .all(|series| series.estimated_cost.known_subtotal.is_none()
+            && !series.estimated_cost.complete));
+}
+
+#[test]
+fn turn_activity_keeps_the_model_when_only_the_reasoning_context_conflicts() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&temp.path().join("turn-conflict.sqlite")).unwrap();
+    session(&mut store, "s1");
+    turn_context(&mut store, "s1", "t1", "alpha", Some("high"));
+    turn_context(&mut store, "s1", "t1", "alpha", Some("low"));
+    turn_usage(&mut store, "s1", Some("t1"), "2026-01-02T12:00:00Z", 100, 100);
+    // A model conflict on a different turn still removes only that attribute.
+    session(&mut store, "s2");
+    turn_context(&mut store, "s2", "t2", "alpha", Some("high"));
+    turn_context(&mut store, "s2", "t2", "beta", Some("high"));
+    turn_usage(&mut store, "s2", Some("t2"), "2026-01-02T12:00:00Z", 200, 200);
+
+    let response = read(&mut store, "2026-01-03T00:00:00Z", Range::Last24Hours);
+    assert_eq!(
+        response
+            .turn_activity
+            .series
+            .iter()
+            .map(|series| (series.model.as_deref(), series.effort.as_deref(), series.turns))
+            .collect::<Vec<_>>(),
+        [(None, Some("high"), 1), (Some("alpha"), None, 1)],
+        "a disagreement about one attribute never discards the other"
+    );
+}
+
+#[test]
+fn turn_activity_folds_the_remainder_into_one_series() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&temp.path().join("turn-fold.sqlite")).unwrap();
+    // Ten combinations, each with one more turn than the last.
+    for index in 0..10i64 {
+        let thread = format!("s{index:02}");
+        session(&mut store, &thread);
+        let mut cumulative = 0;
+        for turn in 0..=index {
+            let id = format!("t{index}-{turn}");
+            turn_context(&mut store, &thread, &id, "alpha", Some(&format!("e{index:02}")));
+            cumulative += 10;
+            turn_usage(
+                &mut store,
+                &thread,
+                Some(&id),
+                "2026-01-02T12:00:00Z",
+                10,
+                cumulative,
+            );
+        }
+    }
+    let activity = read(&mut store, "2026-01-03T00:00:00Z", Range::Last24Hours).turn_activity;
+    assert_eq!(activity.combinations, 10);
+    assert_eq!(activity.series.len(), 8, "seven named plus one remainder");
+    let folded = activity.series.last().unwrap();
+    assert_eq!(
+        (folded.key.as_str(), folded.label.as_str()),
+        ("other:", "Other combinations (3)")
+    );
+    // Combinations with 3, 2 and 1 turns fold together.
+    assert_eq!(folded.turns, 6);
+    assert_eq!(folded.tokens.known_tokens.as_deref(), Some("60"));
+    assert_eq!(
+        activity.series.iter().map(|s| s.turns).sum::<u64>(),
+        activity.total_turns
+    );
+    assert_eq!(activity.total_turns, 55);
+    assert_eq!(folded.points.len(), 1, "the remainder merges bin by bin");
+    assert_eq!(folded.points[0].turns, 6);
+}
+
+#[test]
+fn turn_activity_counts_a_combination_s_sessions_across_every_bin_it_appears_in() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&temp.path().join("turn-sessions.sqlite")).unwrap();
+    // The same combination in three sessions, each an hour apart so no two of
+    // its turns share a bin. A per-bin count would see one session at a time.
+    for (index, hour) in ["09", "12", "15"].into_iter().enumerate() {
+        let thread = format!("s{index}");
+        session(&mut store, &thread);
+        turn_context(&mut store, &thread, "t", "alpha", Some("high"));
+        turn_usage(
+            &mut store,
+            &thread,
+            Some("t"),
+            &format!("2026-01-02T{hour}:00:00Z"),
+            100,
+            100,
+        );
+    }
+    // A second combination sharing one of those sessions: distinct counts of
+    // two combinations overlap, so a folded row cannot add them up.
+    turn_context(&mut store, "s0", "u", "alpha", Some("low"));
+    turn_usage(&mut store, "s0", Some("u"), "2026-01-02T10:00:00Z", 50, 150);
+
+    let activity = read(&mut store, "2026-01-03T00:00:00Z", Range::Last24Hours).turn_activity;
+    assert_eq!(
+        activity
+            .series
+            .iter()
+            .map(|series| (series.key.as_str(), series.turns, series.observed_sessions))
+            .collect::<Vec<_>>(),
+        [
+            ("model:alpha|effort:high", 3, Some(3)),
+            ("model:alpha|effort:low", 1, Some(1))
+        ],
+        "sessions are counted over the whole range, not within one bin"
+    );
+    assert_eq!(
+        activity.series[0].points.len(),
+        3,
+        "the three turns still occupy three separate bins"
+    );
+}
+
+#[test]
+fn folded_rows_report_no_session_count_rather_than_a_wrong_one() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&temp.path().join("fold-sessions.sqlite")).unwrap();
+    // Ten combinations, all inside one session: their distinct counts overlap
+    // completely, so summing or maximizing them would both mislead.
+    session(&mut store, "s0");
+    let mut cumulative = 0;
+    for index in 0..10i64 {
+        for turn in 0..=index {
+            let id = format!("t{index}-{turn}");
+            turn_context(&mut store, "s0", &id, "alpha", Some(&format!("e{index:02}")));
+            cumulative += 10;
+            turn_usage(&mut store, "s0", Some(&id), "2026-01-02T12:00:00Z", 10, cumulative);
+        }
+    }
+    let activity = read(&mut store, "2026-01-03T00:00:00Z", Range::Last24Hours).turn_activity;
+    let folded = activity.series.last().unwrap();
+    assert_eq!(folded.kind, "other");
+    assert_eq!(folded.observed_sessions, None);
+    assert!(activity.series[..activity.series.len() - 1]
+        .iter()
+        .all(|series| series.observed_sessions == Some(1)));
+}

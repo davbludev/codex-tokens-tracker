@@ -29,6 +29,20 @@ A parent supported by agreeing evidence whose relationship is neither self-refer
 **Missing-parent placeholder**:
 A session referenced by parent evidence that has not itself been observed; it carries no invented usage or project membership.
 
+**Turn**:
+One turn identity within one session. It is counted once, in the bin of its first accepted observation in a range, where its tokens and estimated token cost are counted too.
+_Avoid_: Request, API call, message
+
+**Reasoning effort**:
+The effort a turn's own context recorded for it, in the source's own wording. It is unavailable for turns observed before this application began storing it, and for a turn whose contexts disagree.
+_Avoid_: Reasoning level, thinking budget
+
+**Model and reasoning combination**:
+One observed model paired with one observed reasoning effort. An unavailable model and an unavailable effort never merge into a named combination.
+
+**Unattributed combination**:
+The combination of turns that attribute neither a model nor a reasoning effort. It keeps its own row rather than folding into the remainder.
+
 **Estimated token cost**:
 The valuation of token usage at user-configured prices, rather than an actual charge.
 _Avoid_: Actual cost, amount charged, bill
@@ -45,7 +59,21 @@ Observations, their valuations and weekly limit samples older than 45 days befor
 _Avoid_: Deleted history, purged data
 
 **Estimated cost by token category**:
-The split of an interval's estimated token cost into input, cached input, cache-write and output amounts, each observation at its own model's price version; the four amounts add up to the interval's estimated token cost.
+The split of a scope's estimated token cost into uncached input, cached input, cache-write and output amounts, each observation at its own model's price version; the four amounts add up to that scope's estimated token cost.
+
+**Uncached input cost**:
+The estimated token cost of input tokens that were not served from cache, and that a price version does not also count as a cache write.
+_Avoid_: Input cost
+
+**Per-model estimated cost**:
+The estimated token cost by token category of one model's direct usage within a range, computed only from observations that already carry a durable valuation, so it reconstructs that model's known cost subtotal exactly.
+
+**Folded model remainder**:
+One row standing for the models outside the ranked rows, whose tokens and amounts are the exact sums of the models it replaces; it is not a model.
+
+**Blended cost per million tokens**:
+One model's known cost subtotal divided by its total tokens; it mixes the four category prices and the observed cache-hit ratio, and is not a configured price.
+_Avoid_: Model price, rate
 
 **Known cost subtotal**:
 The sum of estimated token costs for priced usage within a scope; it is incomplete when that scope also contains unpriced usage.

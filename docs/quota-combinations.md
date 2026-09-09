@@ -73,7 +73,7 @@ The collapsed Method and data quality block contains formulas and interpretation
 ## Estimated cost by token category
 
 Below the hypotheses, a second panel splits each interval's estimated token
-cost into input, cached input, cache-write and output amounts. Each interval
+cost into uncached input, cached input, cache-write and output amounts. Each interval
 adds `categories`: four exact integer trillionths of USD plus `reason`. Unlike
 the hypotheses, these follow each observation's own preserved price version and
 its policies (reasoning inside output unless separately priced; cache writes
@@ -83,7 +83,7 @@ observation makes all four amounts unavailable with a reason.
 
 The chart stacks the four categories per interval as USD / 1%, bottom-up in the
 key's fixed order, with a 2px surface gap between segments. Bars use an ordinal
-axis labelled with each interval's end time; hover or focus the chart and use
+axis labelled with each interval's end time, thinned to the labels that fit; hover or focus the chart and use
 Left/Right, Home/End to read exact per-category USD / 1%. Four tiles report the
 weighted USD / 1%, the share of the total and USD / 100% per category, using the
 same weighted formula as the hypotheses but over the priced intervals only.
@@ -101,4 +101,8 @@ restart, resets and ambiguity. Category tests cover per-version policies,
 mixed models and unavailable states. `tests/dashboard-ui.mjs` checks eight
 cards, series visibility, stable colors, keyboard controls, metric switching,
 the stacked category panel with its tiles, readout and unavailable state, and
-responsive layout alongside the preserved upper Dashboard behaviors.
+responsive layout alongside the preserved upper Dashboard behaviors. Both
+panels live in the dashboard's collapsed **Advanced** block; the badge and key
+wording distinguishes uncached input and visible output from the token counters
+of the same name. See [Cost by model](model-costs.md) for the absolute,
+per-model split of the same four categories.

@@ -75,8 +75,8 @@ export function DashboardChart({ chart }: { chart: ChartData }) {
       </div>
       <div id="dashboard-selected" role="status" aria-live="polite" aria-atomic="true"><PointReadout point={point} /></div></details>
     </>}
-    <p className="dashboard-muted">{chart.coverageNote} Lines restart for each trustworthy segment; dashed markers indicate observation boundaries.</p>
-    {chart.boundaries.length > 0 && <details><summary>{chart.boundaries.reduce((sum, b) => sum + b.count, 0)} observation boundaries</summary>
+    <p className="dashboard-muted">{chart.coverageNote} Each line restarts where the observations stop being comparable; dashed markers show where that happened.</p>
+    {chart.boundaries.length > 0 && <details><summary>{count(chart.boundaries.reduce((sum, b) => sum + b.count, 0), "observation boundary", "observation boundaries")}</summary>
       <ul className="dashboard-boundaries">{chart.boundaries.map(b => <li key={b.binIndex}>{exactTime(b.firstTime)}{exactTime(b.lastTime) !== exactTime(b.firstTime) ? ` – ${exactTime(b.lastTime)}` : ""}: {b.kinds.map(kind => kind.replace(/([A-Z])/g, " $1").toLowerCase()).join(", ")} ({b.count}){b.overloaded ? " — multiple boundaries grouped" : ""}</li>)}</ul>
     </details>}
   </div>;
@@ -89,4 +89,9 @@ function PointReadout({ point }: { point: ChartPoint }) {
     <dt>Effective USD / 1%</dt><dd>{usd(point.effectiveUsdPerPercent)}{point.unavailableReason ? ` — ${unavailable[point.unavailableReason]}` : ""}</dd>
     <dt>Segment</dt><dd>{point.segmentId ?? "Unavailable"}{!point.connectFromPrevious ? " — observation boundary; no connection from previous point" : ""}</dd>
   </dl>;
+}
+
+/** Singular and plural share one call site, so a count of one never reads wrong. */
+function count(value: number, one: string, many: string): string {
+  return value.toLocaleString() + " " + (value === 1 ? one : many);
 }

@@ -36,7 +36,9 @@ export function QuotaCategoryCosts({ analysis }: { analysis: Analysis }) {
     const plot = new uPlot({ width: Math.max(200, host.current.clientWidth), height: 260,
       legend: { show: false }, cursor: { drag: { x: false, y: false } },
       scales: { x: { time: false, range: [.5, intervals.length + .5] }, y: { range: (_plot, _min, max) => [0, max > 0 ? max * 1.1 : 1] } },
-      axes: [{ stroke: "#aebccc", grid: { show: false }, incrs: [1, 2, 5, 10, 20, 50, 100, 200], values: (_plot, ticks) => ticks.map(tick => intervals[tick - 1] ? localTime(intervals[tick - 1].end) : "") },
+      // A date label needs about 110px, so narrow charts label fewer bars instead
+      // of running their labels together.
+      axes: [{ stroke: "#aebccc", grid: { show: false }, incrs: [1, 2, 5, 10, 20, 50, 100, 200], space: 110, values: (_plot, ticks) => ticks.map(tick => intervals[tick - 1] ? localTime(intervals[tick - 1].end) : "") },
         { label: "USD / 1%", stroke: "#aebccc", grid: { stroke: "#293442" }, size: 88,
           values: (_plot, ticks) => ticks.map(value => value !== 0 && (Math.abs(value) < 0.001 || Math.abs(value) >= 1e9) ? value.toExponential(2) : value.toLocaleString(undefined, { maximumSignificantDigits: 5 })) }],
       // A surface stroke separates stacked segments and adjacent bars.
@@ -50,7 +52,7 @@ export function QuotaCategoryCosts({ analysis }: { analysis: Analysis }) {
   const interval = inspected === null ? null : intervals[Math.min(inspected, intervals.length - 1)];
   return <section className="quota-categories dashboard-panel" aria-labelledby="quota-categories-heading">
     <div className="dashboard-section-heading"><h2 id="quota-categories-heading">Estimated cost by token category</h2><span className="dashboard-muted">{stats.count} / {intervals.length} priced intervals</span></div>
-    <p>How much of each observed weekly percentage point is input, cached input, cache-write or output cost, at each observation's own model price.</p>
+    <p>How much of each observed weekly percentage point is uncached input, cached input, cache-write or output cost, at each observation's own model price.</p>
     <p className="dashboard-muted">API-equivalent · configured model prices · reasoning inside output · cache writes additional to input</p>
     {intervals.length ? priced ? <>
       <div className="quota-categories-plot" ref={host} role="group" aria-label="Stacked USD per observed 1% by token category; use arrow keys for interval details" tabIndex={0}

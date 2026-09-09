@@ -25,7 +25,7 @@ pub(super) fn read(
     cycle: Option<Time>,
     now: Time,
     bins: u32,
-) -> Result<(dto::LocalUsage, dto::Breakdowns), ReadError> {
+) -> Result<(dto::LocalUsage, dto::Breakdowns, dto::TurnActivity), ReadError> {
     let start = match query.range {
         Range::All => tx.query_row(
             "SELECT time_seconds,time_nanos FROM observations WHERE accepted=1 AND time_seconds IS NOT NULL AND time_nanos IS NOT NULL AND (time_seconds,time_nanos)<=(?1,?2) ORDER BY time_seconds,time_nanos LIMIT 1",
@@ -74,15 +74,19 @@ pub(super) fn read(
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|_| ReadError::Storage)?;
     let untimed_observations = tx.query_row("SELECT COUNT(*) FROM observations WHERE accepted=1 AND (time_seconds IS NULL OR time_nanos IS NULL)", [], |row| row.get::<_, i64>(0)).map_err(|_| ReadError::Storage)? as u64;
+    let (model_costs, category_totals) = super::models::read(tx, start, now, INTERVAL)?;
     let breakdowns = dto::Breakdowns {
         metric: query.breakdown_metric,
         models: breakdown(tx, start, now, query.breakdown_metric, true)?,
         projects: breakdown(tx, start, now, query.breakdown_metric, false)?,
+        model_costs,
+        category_totals,
     };
+    let turn_activity = super::turns::read(tx, start, now, bins, INTERVAL)?;
     Ok((dto::LocalUsage {
         start, end: now, bin_count: bins, summary, points, untimed_observations,
         coverage_note: "Accepted direct local usage in start-exclusive/end-inclusive bins. Empty bins contain no accepted observations, not measured complete zero. Untimed usage cannot be assigned to this range. Token categories overlap; do not add them. Unpriced usage remains unknown.",
-    }, breakdowns))
+    }, breakdowns, turn_activity))
 }
 
 fn read_summary(row: &Row<'_>, offset: usize) -> rusqlite::Result<dto::UsageSummary> {

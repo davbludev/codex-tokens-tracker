@@ -177,10 +177,13 @@ fn summary_with_params(
     summary_from_cte(tx, &cte, parameters)
 }
 
+/// total, input, cached input, cache writes, output, reasoning.
+pub(crate) const TOKEN_CATEGORIES: usize = 6;
+
 pub(crate) fn token_fields() -> String {
     // json_extract operates only on the durable allowlisted projection. No observation
     // list or normalized JSON is loaded into Rust or sent across IPC.
-    let categories = [
+    let categories: [&str; TOKEN_CATEGORIES] = [
         "o.total",
         "json_extract(o.normalized,'$.usage.input_tokens')",
         "json_extract(o.normalized,'$.usage.cached_input_tokens')",

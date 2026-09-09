@@ -101,7 +101,7 @@ impl Store {
         let mut connection = Connection::open(path)?;
         connection.busy_timeout(std::time::Duration::from_secs(3))?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > 10 {
+        if version > 11 {
             return Err(Error::Schema);
         }
         if version == 0 {
@@ -174,6 +174,11 @@ impl Store {
         if version < 10 {
             let tx = connection.transaction()?;
             tx.execute_batch(include_str!("../migrations/010_retention.sql"))?;
+            tx.commit()?;
+        }
+        if version < 11 {
+            let tx = connection.transaction()?;
+            tx.execute_batch(include_str!("../migrations/011_turn_reasoning.sql"))?;
             tx.commit()?;
         }
         Ok(Self { connection })
@@ -504,33 +509,31 @@ fn apply_record(
                     context.workspace_roots.as_deref(),
                 )?;
                 refresh_attribution(tx, &thread)?;
-                let old: Option<Option<String>> = tx
+                let effort = context.observed_effort();
+                let old: Option<(Option<String>, Option<String>)> = tx
                     .query_row(
-                        "SELECT model FROM turn_contexts WHERE thread_id=? AND turn_id=?",
+                        "SELECT model,effort FROM turn_contexts WHERE thread_id=? AND turn_id=?",
                         params![thread, context.turn_id],
-                        |r| r.get(0),
+                        |r| Ok((r.get(0)?, r.get(1)?)),
                     )
                     .optional()?;
-                if old.as_ref().is_some_and(|m| m != &context.model) {
-                    diagnostic(
-                        &tx,
-                        path,
-                        "Conflicting model context; model unavailable",
-                        false,
-                    )?;
-                    tx.execute(
-                        "UPDATE turn_contexts SET model=NULL WHERE thread_id=? AND turn_id=?",
-                        params![thread, context.turn_id],
-                    )?;
-                    tx.execute(
-                            "UPDATE observations SET model=NULL, diagnostic=COALESCE(diagnostic, 'Conflicting model context; model unavailable') WHERE thread_id=? AND json_extract(normalized, '$.turn_id')=?",
-                            params![thread, context.turn_id],
+                match old {
+                    // Model and reasoning conflict independently: disagreeing on
+                    // one never discards what the other still agrees on.
+                    Some((old_model, old_effort)) => {
+                        if old_model != context.model {
+                            conflicting_context(&tx, path, &thread, &context.turn_id, "model")?;
+                        }
+                        if old_effort.as_deref() != effort {
+                            conflicting_context(&tx, path, &thread, &context.turn_id, "effort")?;
+                        }
+                    }
+                    None => {
+                        tx.execute(
+                            "INSERT OR IGNORE INTO turn_contexts(thread_id,turn_id,model,effort) VALUES(?,?,?,?)",
+                            params![thread, context.turn_id, context.model, effort],
                         )?;
-                } else {
-                    tx.execute(
-                        "INSERT OR IGNORE INTO turn_contexts VALUES(?,?,?)",
-                        params![thread, context.turn_id, context.model],
-                    )?;
+                    }
                 }
             }
         }
@@ -715,6 +718,32 @@ fn snapshot(connection: &Connection) -> Result<Snapshot> {
     Ok(snapshot)
 }
 
+/// Two turn contexts disagreeing on one attribute make that attribute
+/// unavailable for the turn and for every observation already attributed to it.
+fn conflicting_context(
+    tx: &Transaction<'_>,
+    path: &str,
+    thread: &str,
+    turn: &str,
+    column: &str,
+) -> Result<()> {
+    let message: &str = if column == "model" {
+        "Conflicting model context; model unavailable"
+    } else {
+        "Conflicting reasoning context; reasoning effort unavailable"
+    };
+    diagnostic(tx, path, message, false)?;
+    tx.execute(
+        &format!("UPDATE turn_contexts SET {column}=NULL WHERE thread_id=? AND turn_id=?"),
+        params![thread, turn],
+    )?;
+    tx.execute(
+        &format!("UPDATE observations SET {column}=NULL, diagnostic=COALESCE(diagnostic, ?) WHERE thread_id=? AND json_extract(normalized, '$.turn_id')=?"),
+        params![message, thread, turn],
+    )?;
+    Ok(())
+}
+
 fn diagnostic(tx: &Transaction<'_>, path: &str, message: &str, halt: bool) -> Result<()> {
     tx.execute(
         "UPDATE sources SET diagnostic=CASE WHEN halted=1 THEN diagnostic ELSE ? END,halted=MAX(halted,?) WHERE path=?",
@@ -799,17 +828,17 @@ fn ingest_usage(
     if let Some(message) = message {
         diagnostic(tx, path, message, true)?;
     }
-    let model: Option<String> = tx
+    let (model, effort): (Option<String>, Option<String>) = tx
         .query_row(
-            "SELECT model FROM turn_contexts WHERE thread_id=? AND turn_id=?",
+            "SELECT model,effort FROM turn_contexts WHERE thread_id=? AND turn_id=?",
             params![usage.thread_id, usage.turn_id],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?
-        .flatten();
+        .unwrap_or((None, None));
     let parsed = time.ok();
-    tx.execute("INSERT INTO observations(thread_id,endpoint,response_id,timestamp,normalized,adapter,source_path,source_offset,source_ordinal,model,accepted,total,diagnostic,source_generation,state,time_seconds,time_nanos,endpoint_order,start_order) VALUES(?,?,?,?,?,?,?,?,?,?,0,NULL,?,?,?,?,?,?,?)",
-        params![usage.thread_id, endpoint, usage.response_id, timestamp, encoded, adapter::VERSION, path, offset, ordinal, model, message,generation,if validation.is_ok() { "pending" } else { "rejected" },parsed.map(|t| t.0),parsed.map(|t| t.1),accounting::endpoint_key(&usage.thread_token_usage),accounting::start_key(&usage.usage,&usage.thread_token_usage)])?;
+    tx.execute("INSERT INTO observations(thread_id,endpoint,response_id,timestamp,normalized,adapter,source_path,source_offset,source_ordinal,model,effort,accepted,total,diagnostic,source_generation,state,time_seconds,time_nanos,endpoint_order,start_order) VALUES(?,?,?,?,?,?,?,?,?,?,?,0,NULL,?,?,?,?,?,?,?)",
+        params![usage.thread_id, endpoint, usage.response_id, timestamp, encoded, adapter::VERSION, path, offset, ordinal, model, effort, message,generation,if validation.is_ok() { "pending" } else { "rejected" },parsed.map(|t| t.0),parsed.map(|t| t.1),accounting::endpoint_key(&usage.thread_token_usage),accounting::start_key(&usage.usage,&usage.thread_token_usage)])?;
     if validation.is_ok() {
         reconcile_candidate(tx, tx.last_insert_rowid())?;
     }

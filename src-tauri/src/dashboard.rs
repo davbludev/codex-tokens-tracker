@@ -59,6 +59,7 @@ pub struct Response {
     pub chart: Chart,
     pub local_usage: LocalUsage,
     pub breakdowns: Breakdowns,
+    pub turn_activity: TurnActivity,
     pub quota_analysis: QuotaAnalysis,
 }
 
@@ -70,15 +71,15 @@ pub struct QuotaInterval {
     pub consumed_percentage_points: String,
     pub tokens: aggregates::Tokens,
     pub hypotheses: Vec<QuotaHypothesis>,
-    pub categories: QuotaCategoryCosts,
+    pub categories: CategoryCosts,
 }
 
-/// Estimated token cost of the interval split by category, each observation
-/// at its own model's preserved price version. Exact integer trillionths of
-/// USD; every amount is absent if any usage in the interval is unpriced.
-#[derive(Debug, Serialize)]
+/// Estimated token cost split by token category, each observation at its own
+/// model's preserved price version. Exact integer trillionths of USD; every
+/// amount is absent when the scope has no usable priced split.
+#[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct QuotaCategoryCosts {
+pub struct CategoryCosts {
     pub input: Option<String>,
     pub cached_input: Option<String>,
     pub cache_writes: Option<String>,
@@ -154,12 +155,80 @@ pub struct Breakdown {
     pub estimated_cost: aggregates::EstimatedCost,
 }
 
+/// One model's direct usage in the selected range, with its estimated token
+/// cost split into input, cached input, cache-write and output amounts. The
+/// four amounts add up exactly to `estimated_cost.known_subtotal`, because each
+/// is recomputed from the same stored valuation's own price version.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCost {
+    pub key: String,
+    pub label: String,
+    pub kind: &'static str,
+    pub tokens: aggregates::Tokens,
+    pub estimated_cost: aggregates::EstimatedCost,
+    pub categories: CategoryCosts,
+    pub accepted_observations: u64,
+    /// Absent when folding made the distinct set unrecoverable.
+    pub observed_sessions: Option<u64>,
+}
+
+/// One time bin of one model-and-reasoning combination. A turn contributes its
+/// whole tokens and cost to the bin its first accepted observation fell in.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnPoint {
+    pub index: u32,
+    pub turns: u64,
+    pub tokens: aggregates::Category,
+    pub estimated_cost: aggregates::EstimatedCost,
+}
+
+/// One combination of a model and the reasoning effort its turns ran at.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnSeries {
+    pub key: String,
+    pub label: String,
+    pub model: Option<String>,
+    /// The source's own wording, never a normalized or invented level.
+    pub effort: Option<String>,
+    /// `combination`, the folded `other` remainder, or `unattributed`.
+    pub kind: &'static str,
+    pub turns: u64,
+    pub accepted_observations: u64,
+    /// Absent when folding made the distinct set unrecoverable.
+    pub observed_sessions: Option<u64>,
+    pub tokens: aggregates::Category,
+    pub estimated_cost: aggregates::EstimatedCost,
+    pub points: Vec<TurnPoint>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnActivity {
+    pub start: Time,
+    pub end: Time,
+    pub bin_count: u32,
+    pub total_turns: u64,
+    /// Distinct combinations before the remainder folds into one series.
+    pub combinations: u64,
+    /// Turns standing for an observation whose record carried no turn identity.
+    pub turns_without_identity: u64,
+    pub series: Vec<TurnSeries>,
+    pub coverage_note: &'static str,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Breakdowns {
     pub metric: BreakdownMetric,
     pub models: Vec<Breakdown>,
     pub projects: Vec<Breakdown>,
+    /// Ranked by estimated cost; remaining models fold into one `other:` row.
+    pub model_costs: Vec<ModelCost>,
+    /// The same split across every model in the range, including `other:`.
+    pub category_totals: CategoryCosts,
 }
 
 #[derive(Clone, Debug, Serialize)]

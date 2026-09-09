@@ -1,10 +1,10 @@
 import { compactCost, compactTokens, costText, exactTokens } from "./dashboard-data";
 import type { BreakdownMetric, UsageBreakdown } from "./dashboard-types";
 
-export function UsageBreakdowns({ models, projects, metric, chooseMetric, loading }: { models: UsageBreakdown[]; projects: UsageBreakdown[]; metric: BreakdownMetric; chooseMetric: (metric: BreakdownMetric) => void; loading: boolean }) {
+export function UsageBreakdowns({ projects, metric, chooseMetric, loading }: { projects: UsageBreakdown[]; metric: BreakdownMetric; chooseMetric: (metric: BreakdownMetric) => void; loading: boolean }) {
   return <section className="usage-breakdowns" aria-labelledby="breakdown-heading">
-    <div className="dashboard-section-heading"><div><h2 id="breakdown-heading">Where your usage goes</h2><p className="dashboard-muted">Top five, with remaining and unattributed usage included</p></div><div className="dashboard-ranges" role="group" aria-label="Breakdown metric"><button type="button" aria-pressed={metric === "tokens"} onClick={() => chooseMetric("tokens")}>Tokens</button><button type="button" aria-pressed={metric === "cost"} onClick={() => chooseMetric("cost")}>Estimated cost</button></div></div>
-    <div className="dashboard-chart-grid" aria-busy={loading}><Breakdown title="By model" items={models} metric={metric} /><Breakdown title="By project" items={projects} metric={metric} /></div>
+    <div className="dashboard-section-heading"><div><span className="eyebrow">ATTRIBUTION</span><h2 id="breakdown-heading">Usage by project</h2><p className="dashboard-muted">Top five projects, plus everything else and the sessions that could not be attributed</p></div><div className="dashboard-ranges" role="group" aria-label="Breakdown metric"><button type="button" aria-pressed={metric === "tokens"} onClick={() => chooseMetric("tokens")}>Tokens</button><button type="button" aria-pressed={metric === "cost"} onClick={() => chooseMetric("cost")}>Estimated cost</button></div></div>
+    <div aria-busy={loading}><Breakdown title="By project" items={projects} metric={metric} /></div>
   </section>;
 }
 

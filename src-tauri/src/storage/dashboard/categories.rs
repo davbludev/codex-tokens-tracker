@@ -1,13 +1,14 @@
-//! Per-interval estimated cost split by token category. Each observation is
-//! valued with its own model's preserved price version and policies, so the
-//! four amounts add up exactly to the interval's estimated token cost.
+//! Estimated cost split by token category, shared by the quota intervals and
+//! the per-model rows. Each observation is valued with its own model's
+//! preserved price version and policies, so the four amounts add up exactly to
+//! the estimated token cost of whatever scope they were accumulated over.
 use crate::{
     adapter::Tokens,
-    dashboard::QuotaCategoryCosts,
+    dashboard::CategoryCosts,
     pricing::{self, Rates},
 };
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct Categories {
     amounts: [i128; 4],
     reason: Option<&'static str>,
@@ -41,14 +42,43 @@ impl Categories {
         }
     }
 
-    pub(super) fn finish(&self) -> QuotaCategoryCosts {
+    /// Adds another scope's amounts, keeping the first blocking reason.
+    pub(super) fn merge(&mut self, other: Categories) {
+        self.observed |= other.observed;
+        for (sum, amount) in self.amounts.iter_mut().zip(other.amounts) {
+            match sum.checked_add(amount) {
+                Some(value) => *sum = value,
+                None => self.reason = Some("Estimated amount exceeds supported range"),
+            }
+        }
+        self.reason = self.reason.or(other.reason);
+    }
+
+    /// Exact sum of the four amounts, or None once a reason blocks the split.
+    pub(super) fn checked_total(&self) -> Option<i128> {
+        if self.reason.is_some() {
+            return None;
+        }
+        self.amounts
+            .iter()
+            .try_fold(0i128, |sum, amount| sum.checked_add(*amount))
+    }
+
+    /// Marks the split unusable with the caller's own wording, which then
+    /// replaces the default "no observations" reason.
+    pub(super) fn reject(&mut self, reason: &'static str) {
+        self.observed = true;
+        self.reason = Some(reason);
+    }
+
+    pub(super) fn finish(&self) -> CategoryCosts {
         let reason = if self.observed {
             self.reason
         } else {
             Some("No local usage observations")
         };
         let amount = |index: usize| reason.is_none().then(|| self.amounts[index].to_string());
-        QuotaCategoryCosts {
+        CategoryCosts {
             input: amount(0),
             cached_input: amount(1),
             cache_writes: amount(2),

@@ -259,11 +259,11 @@ fn migration_010_enqueues_one_valuation_job_per_priced_model() {
     // Shape a database that was upgraded before the reach-back rule existed.
     store
         .connection()
-        .execute_batch("DELETE FROM pricing_work; DROP TABLE retention_control; DROP INDEX limit_sample_timestamp; PRAGMA user_version=9;")
+        .execute_batch("DELETE FROM pricing_work; DROP TABLE retention_control; DROP INDEX limit_sample_timestamp; ALTER TABLE turn_contexts DROP COLUMN effort; ALTER TABLE observations DROP COLUMN effort; PRAGMA user_version=9;")
         .unwrap();
     drop(store);
     let mut store = Store::open(&path).unwrap();
-    assert_eq!(count(&store, "PRAGMA user_version"), 10);
+    assert_eq!(count(&store, "PRAGMA user_version"), 11);
     let jobs = store
         .connection()
         .prepare("SELECT version_id,after_id,through_id FROM pricing_work ORDER BY version_id")

@@ -55,7 +55,7 @@
 .usage-breakdowns .dashboard-section-heading p { margin: 3px 0 0; }
 .breakdown-panel h3 { display: flex; justify-content: space-between; align-items: center; font-size: 13px; font-weight: 550; margin: 0 0 17px; }
 .breakdown-panel h3 span { font-size: 9px; color: var(--muted); letter-spacing: 1px; font-weight: 500; }
-.breakdown-list { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 13px; }
+.breakdown-list { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px 28px; }
 .breakdown-label { display: flex; align-items: baseline; gap: 16px; margin-bottom: 5px; font-size: 11px; }
 .breakdown-label > span { min-width: 0; text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }
 .breakdown-label strong { margin-left: auto; white-space: nowrap; font-size: 11px; font-weight: 550; font-variant-numeric: tabular-nums; }
@@ -70,6 +70,13 @@
 .incomplete-mark { color: var(--warning); margin-left: 3px; }
 .breakdown-empty { color: var(--muted); padding: 22px 0; font-size: 12px; }
 .weekly-overview { margin-top: 24px; }
+.weekly-lead { font-size: 12px; color: #b5c3d2; margin: 10px 0 0; max-width: 96ch; }
+.dashboard-research { margin-top: 26px; border: 1px solid var(--border); border-radius: 10px; background: #11171f; }
+.dashboard-research > summary { display: grid; gap: 4px; padding: 14px 18px; }
+.dashboard-research[open] > summary { border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+.dashboard-research-title { font-size: 14px; font-weight: 600; color: var(--text); letter-spacing: -.15px; }
+.dashboard-research > summary .dashboard-muted { max-width: 96ch; }
+.dashboard-research > section { margin: 0 18px 18px; }
 .weekly-overview .eyebrow { margin-bottom: 3px; }
 .weekly-overview-top { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(0, 2fr); gap: 25px; margin: 18px 0 10px; }
 .quota-amount { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
@@ -105,6 +112,7 @@
 .dashboard-loading > div { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; height: 115px; }
 .dashboard-loading > div:nth-child(n+5) { grid-column: span 2; height: 300px; }
 @media (max-width: 1150px) and (min-width: 961px) { .app-content { padding: 24px; } .dashboard-summary { gap: 9px; } .dashboard-summary .dashboard-metric { padding: 13px; } .dashboard-metric p { font-size: 23px; } }
+@media (max-width: 900px) { .breakdown-list { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 700px) {
   .dashboard-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dashboard-chart-grid { grid-template-columns: 1fr; }

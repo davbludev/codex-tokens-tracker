@@ -47,7 +47,7 @@ export function UsageChart({ usage, kind, onOpenPricing }: { usage: LocalUsage; 
     return () => { resize.disconnect(); plot.destroy(); };
   }, [usage, isCost, noPrices]);
   return <section className={"dashboard-panel usage-chart usage-chart-" + kind} aria-labelledby={id + "-heading"}>
-    <div className="chart-panel-heading"><div><h2 id={id + "-heading"}>{isCost ? "Estimated cost" : "Token activity"}</h2><p>{isCost ? "USD at your configured prices" : "Total tokens per observation interval"}</p></div><span className={"chart-color-dot " + kind} aria-hidden="true" /></div>
+    <div className="chart-panel-heading"><div><h2 id={id + "-heading"}>{isCost ? "Estimated cost over time" : "Token activity"}</h2><p>{isCost ? "USD at your configured prices" : "Total tokens per time bin"}</p></div><span className={"chart-color-dot " + kind} aria-hidden="true" /></div>
     {usage.points.length === 0 ? <div className="chart-empty" role="status"><span aria-hidden="true">⌁</span><strong>No recorded activity</strong><p>Usage will appear here as sessions are imported.</p></div> : noPrices ? <div className="chart-empty" role="status"><span aria-hidden="true">$</span><strong>Add prices to see estimated cost</strong><p>Your tokens are tracked. Their cost is currently unknown.</p>{onOpenPricing && <button type="button" onClick={onOpenPricing}>Configure prices</button>}</div> : <>
       <div className="usage-plot" ref={host} aria-hidden="true" />
       {hovered !== null && usage.points[hovered] && <div className="usage-tooltip" role="tooltip"><BinReadout point={usage.points[hovered]} kind={kind} /></div>}

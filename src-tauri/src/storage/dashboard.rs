@@ -9,7 +9,10 @@ use std::{
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
+mod categories;
+mod models;
 mod quota;
+mod turns;
 mod usage;
 
 impl Store {
@@ -61,7 +64,7 @@ impl Store {
                 .map(|cycle| cycle.first_observation.time),
             earliest,
         );
-        let (local_usage, breakdowns) = usage::read(
+        let (local_usage, breakdowns, turn_activity) = usage::read(
             &tx,
             &query,
             weekly
@@ -115,7 +118,7 @@ impl Store {
         let quota_analysis = quota::read(&tx, start, now)?;
         Ok(dto::Response { evaluated_at: now, weekly, global,
             token_scope: "All locally observed history; direct session usage counted once. Cached input and reasoning overlap other categories; do not add categories.",
-            chart: downsample.finish(), local_usage, breakdowns, quota_analysis })
+            chart: downsample.finish(), local_usage, breakdowns, turn_activity, quota_analysis })
     }
 }
 
