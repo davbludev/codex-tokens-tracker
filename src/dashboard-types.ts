@@ -47,6 +47,7 @@ export type WeeklySummary = {
   history: HistoricalCycle[];
   nextCursor: string | null;
   excludedSamples: number;
+  staleSamples: number;
   sessionWeeklyPercentageImpact: string | null;
   coverageNote: string;
 };

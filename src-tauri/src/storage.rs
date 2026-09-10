@@ -101,7 +101,7 @@ impl Store {
         let mut connection = Connection::open(path)?;
         connection.busy_timeout(std::time::Duration::from_secs(3))?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > 11 {
+        if version > 13 {
             return Err(Error::Schema);
         }
         if version == 0 {
@@ -179,6 +179,16 @@ impl Store {
         if version < 11 {
             let tx = connection.transaction()?;
             tx.execute_batch(include_str!("../migrations/011_turn_reasoning.sql"))?;
+            tx.commit()?;
+        }
+        if version < 12 {
+            let tx = connection.transaction()?;
+            tx.execute_batch(include_str!("../migrations/012_subagent_spawn_context.sql"))?;
+            tx.commit()?;
+        }
+        if version < 13 {
+            let tx = connection.transaction()?;
+            tx.execute_batch(include_str!("../migrations/013_unreadable_record_is_a_gap.sql"))?;
             tx.commit()?;
         }
         Ok(Self { connection })
@@ -428,6 +438,16 @@ fn unsigned(row: &rusqlite::Row<'_>, column: usize) -> rusqlite::Result<u64> {
     u64::try_from(value).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(column, value))
 }
 
+/// Whether this source's own session already named `candidate` as its parent,
+/// which is the only identity besides its own that its records can carry.
+fn spawn_context(tx: &Transaction<'_>, path: &str, bound: &str, candidate: &str) -> Result<bool> {
+    Ok(tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM metadata_evidence WHERE thread_id=?1 AND kind='parent' AND value=?2 AND source_path=?3)",
+        params![bound, candidate, path],
+        |r| r.get(0),
+    )?)
+}
+
 fn apply_record(
     tx: &Transaction<'_>,
     path: &str,
@@ -442,8 +462,14 @@ fn apply_record(
                     r.get(0)
                 })?;
             let encoded = serde_json::to_string(&meta)?;
-            if existing.as_ref().is_some_and(|id| id != &meta.id) {
-                diagnostic(&tx, path, "Conflicting direct session identity", true)?;
+            if let Some(bound) = existing.as_deref().filter(|id| *id != meta.id) {
+                // A subagent's rollout replays the metadata of the session that
+                // spawned it. That is the parent this stream already named, not a
+                // second identity for it: the parent's own source carries its
+                // usage, location and version evidence.
+                if !spawn_context(tx, path, bound, &meta.id)? {
+                    diagnostic(&tx, path, "Conflicting direct session identity", true)?;
+                }
             } else {
                 tx.execute("INSERT INTO sessions(thread_id, metadata) VALUES(?,?) ON CONFLICT(thread_id) DO UPDATE SET metadata=COALESCE(sessions.metadata,excluded.metadata),is_placeholder=0", params![meta.id, encoded])?;
                 tx.execute(
@@ -565,6 +591,16 @@ fn apply_record(
             &tx,
             path,
             "Unrecognized envelope skipped; only supported modern usage is shown",
+            false,
+        )?,
+        // The reader cannot buffer this record, so it cannot be interpreted. It
+        // is skipped rather than stopping the source: had it carried usage, the
+        // records after it cannot bridge the thread's counters and stay
+        // unavailable on their own evidence.
+        Ok(Record::Unreadable) => diagnostic(
+            &tx,
+            path,
+            "Record exceeds the bounded reader limit; skipped without stopping accounting",
             false,
         )?,
         Err(message) => diagnostic(&tx, path, message, true)?,

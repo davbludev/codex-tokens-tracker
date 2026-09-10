@@ -26,6 +26,20 @@ A shared canonical Git common directory established by local administrative path
 **Effective parent**:
 A parent supported by agreeing evidence whose relationship is neither self-referential nor part of a cycle. An unresolved parent's own ancestry does not invalidate its descendants.
 
+**Unreadable record**:
+A source record the bounded reader could not buffer, so its type was never
+interpreted. It is skipped rather than stopping the source: usage it may have
+carried stays unavailable because the records after it cannot bridge the
+thread's counters, and is never derived from their difference.
+_Avoid_: Corrupt record, lost usage
+
+**Spawn context**:
+The metadata of the session that spawned a subagent, replayed into the
+subagent's own source. It establishes the parent it already named, never a
+second identity for that source and never an observation of the parent's own
+session.
+_Avoid_: Conflicting identity, second session
+
 **Missing-parent placeholder**:
 A session referenced by parent evidence that has not itself been observed; it carries no invented usage or project membership.
 
@@ -93,6 +107,22 @@ The observed cost per weekly percentage point over the last 15 minutes, when com
 
 **Session weekly percentage impact**:
 The weekly percentage consumption independently attributable to a session; it is unavailable when local observations cannot establish that attribution.
+
+**Weekly window**:
+The account-wide weekly limit period a sample reports, identified by its reset
+time rather than by its percentage. Reset times reported for one window jitter by
+seconds; distinct windows are hours apart.
+
+**Stale observation**:
+A trustworthy sample that re-reports a snapshot of its own weekly window taken
+earlier than one already observed, recognized by a lower percentage within that
+window or by a superseded reset time. It is ignored rather than counted.
+_Avoid_: Decrease, reset, rollback
+
+**Detected reset**:
+The start of a cycle established by a reported weekly window that supersedes the
+current one, or, where no window was ever reported, by a strict decrease.
+_Avoid_: Cycle boundary, actual reset
 
 **Comparable observation interval**:
 An interval bounded by trustworthy rate-limit observations and the estimated token cost for the same period, excluding newer cost that has no matching limit observation.

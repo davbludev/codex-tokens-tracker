@@ -188,6 +188,8 @@ pub struct Response {
     pub history: Vec<HistoricalCycle>,
     pub next_cursor: Option<String>,
     pub excluded_samples: u64,
+    /// Trustworthy samples that re-reported an earlier snapshot of the same window.
+    pub stale_samples: u64,
     pub session_weekly_percentage_impact: Option<String>,
     pub coverage_note: &'static str,
 }
@@ -248,6 +250,10 @@ impl Sample {
     }
 }
 
+/// Reset times jitter by a few seconds within one window while distinct windows
+/// are hours apart, so this tolerance separates a re-reported window from a new one.
+const RESET_METADATA_TOLERANCE_SECONDS: i64 = 300;
+
 /// Streaming chronological reducer: one tie group, one comparable segment and a
 /// bounded history page, regardless of the number of retained source samples.
 pub struct Timeline {
@@ -256,10 +262,14 @@ pub struct Timeline {
     pub latest: Option<Sample>,
     pub recent_start: Option<Sample>,
     pub ambiguous: bool,
+    /// Samples another session captured earlier and re-reported late.
+    pub stale: u64,
     history: VecDeque<CompletedCycle>,
     before: Option<Time>,
     limit: usize,
     recent_cutoff: Time,
+    /// The reset time identifying the current cycle's window, when observed.
+    window: Option<i64>,
     group: Option<Sample>,
     conflict: bool,
     reset_conflict: bool,
@@ -278,6 +288,7 @@ impl Timeline {
             latest: None,
             recent_start: None,
             ambiguous: false,
+            stale: 0,
             history: VecDeque::new(),
             before,
             limit: limit as usize,
@@ -285,6 +296,7 @@ impl Timeline {
                 seconds: now.seconds.saturating_sub(900),
                 nanos: now.nanos,
             },
+            window: None,
             group: None,
             conflict: false,
             reset_conflict: false,
@@ -325,49 +337,66 @@ impl Timeline {
         let Some(mut sample) = self.group.take() else {
             return;
         };
-        if self.conflict {
+        let conflict = std::mem::take(&mut self.conflict);
+        let reset_conflict = std::mem::take(&mut self.reset_conflict);
+        if conflict {
             self.baseline = None;
             self.recent_start = None;
             self.ambiguous = true;
             if let Some(cycle) = &mut self.current {
                 cycle.has_ambiguous_observations = true;
             }
-        } else {
-            if self.reset_conflict {
-                sample.reset = None;
-            }
-            let reset = !self.ambiguous
-                && self
-                    .latest
-                    .as_ref()
-                    .is_some_and(|last| sample.used < last.used);
-            if reset || self.current.is_none() {
-                if let Some(cycle) = self.current.take() {
-                    self.retain(cycle);
-                }
-                self.current = Some(Cycle {
-                    key: sample.time.key(),
-                    first_observation: sample.observation(),
-                    last_observation: sample.observation(),
-                    detected_reset: reset,
-                    has_ambiguous_observations: false,
-                    full_cycle_cost_known: false,
-                });
-                self.baseline = None;
-                self.recent_start = None;
-            }
-            if self.baseline.is_none() {
-                self.baseline = Some(sample.clone());
-            }
-            if self.recent_start.is_none() && sample.time >= self.recent_cutoff {
-                self.recent_start = Some(sample.clone());
-            }
-            self.current.as_mut().unwrap().last_observation = sample.observation();
-            self.latest = Some(sample);
-            self.ambiguous = false;
+            return;
         }
-        self.conflict = false;
-        self.reset_conflict = false;
+        if reset_conflict {
+            sample.reset = None;
+        }
+        // Reset metadata identifies the window; the percentage never does. Every
+        // session reports the same account-wide counter, so a lower percentage
+        // within one window is a snapshot captured earlier, not consumption
+        // running backwards. Only an advance beyond the observed few-second
+        // jitter, or a decrease with no window left to belong to, is a reset.
+        let advanced = matches!((sample.reset, self.window), (Some(new), Some(current)) if new > current + RESET_METADATA_TOLERANCE_SECONDS);
+        let superseded = matches!((sample.reset, self.window), (Some(new), Some(current)) if new + RESET_METADATA_TOLERANCE_SECONDS < current);
+        let decreased = self
+            .latest
+            .as_ref()
+            .is_some_and(|last| sample.used < last.used);
+        let expired = self.window.is_some_and(|reset| sample.time.seconds > reset);
+        let reset =
+            advanced || (decreased && !self.ambiguous && (self.window.is_none() || expired));
+        if !reset && (superseded || decreased) {
+            self.stale += 1;
+            return;
+        }
+        if reset || self.current.is_none() {
+            if let Some(cycle) = self.current.take() {
+                self.retain(cycle);
+            }
+            self.current = Some(Cycle {
+                key: sample.time.key(),
+                first_observation: sample.observation(),
+                last_observation: sample.observation(),
+                detected_reset: reset,
+                has_ambiguous_observations: false,
+                full_cycle_cost_known: false,
+            });
+            self.baseline = None;
+            self.recent_start = None;
+            self.window = sample.reset;
+        } else if let Some(reset) = sample.reset {
+            // Same window, re-reported with its own jitter: keep one anchor.
+            self.window = Some(self.window.map_or(reset, |current| current.max(reset)));
+        }
+        if self.baseline.is_none() {
+            self.baseline = Some(sample.clone());
+        }
+        if self.recent_start.is_none() && sample.time >= self.recent_cutoff {
+            self.recent_start = Some(sample.clone());
+        }
+        self.current.as_mut().unwrap().last_observation = sample.observation();
+        self.latest = Some(sample);
+        self.ambiguous = false;
     }
     pub fn finish(&mut self) -> (Vec<CompletedCycle>, Option<String>) {
         self.flush();

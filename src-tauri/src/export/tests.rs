@@ -227,11 +227,14 @@ fn csv_preserves_quotes_commas_crlf_and_unicode_metadata_without_raw_content() {
     assert!(text.ends_with("\r\n"));
 }
 
-fn limit(store: &mut Store, timestamp: &str, used: u32) {
+/// `window` selects the weekly window; a reset is a new window, exactly as the
+/// source reports one, not merely a lower percentage.
+fn limit(store: &mut Store, timestamp: &str, used: u32, window: i64) {
+    let resets_at = 2_000_000_000_i64 + window * 604_800;
     record(
         store,
         "limits",
-        json!({"type":"event_msg","timestamp":timestamp,"payload":{"type":"token_count","rate_limits":{"limit_id":"codex","secondary":{"used_percent":used,"window_minutes":10080,"resets_at":2_000_000_000_i64}}}}),
+        json!({"type":"event_msg","timestamp":timestamp,"payload":{"type":"token_count","rate_limits":{"limit_id":"codex","secondary":{"used_percent":used,"window_minutes":10080,"resets_at":resets_at}}}}),
     );
 }
 
@@ -240,11 +243,11 @@ fn weekly_export_uses_comparable_intervals_and_retains_all_cycles() {
     let temp = tempfile::tempdir().unwrap();
     let db = temp.path().join("weekly.sqlite");
     let mut store = Store::open(&db).unwrap();
-    limit(&mut store, "2026-01-01T00:00:00Z", 40);
-    limit(&mut store, "2026-01-01T00:10:00Z", 42);
-    limit(&mut store, "2026-01-01T00:20:00Z", 1);
-    limit(&mut store, "2026-01-01T00:30:00Z", 3);
-    limit(&mut store, "2026-01-01T00:40:00Z", 0);
+    limit(&mut store, "2026-01-01T00:00:00Z", 40, 0);
+    limit(&mut store, "2026-01-01T00:10:00Z", 42, 0);
+    limit(&mut store, "2026-01-01T00:20:00Z", 1, 1);
+    limit(&mut store, "2026-01-01T00:30:00Z", 3, 1);
+    limit(&mut store, "2026-01-01T00:40:00Z", 0, 2);
     usage(
         &mut store,
         "priced",

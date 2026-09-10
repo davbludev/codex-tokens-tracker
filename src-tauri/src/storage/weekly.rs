@@ -200,7 +200,7 @@ pub(super) fn project_with_start(
     });
     Ok((dto::Response { evaluated_at: now, current_cycle: timeline.current, observation_age_seconds,
             overall, recent, unmatched_cost, unmatched_cost_start: latest, history, next_cursor,
-            excluded_samples, session_weekly_percentage_impact: None,
+            excluded_samples, stale_samples: timeline.stale, session_weekly_percentage_impact: None,
             coverage_note: "Since observation began: observed local estimated token cost for the current model mix, not an OpenAI charge or proof of complete account usage. Cost uses start-exclusive/end-inclusive comparable observation intervals; newer unmatched cost is separate. Session weekly percentage impact is unavailable.",
         }, earliest))
 }

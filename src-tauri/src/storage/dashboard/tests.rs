@@ -32,6 +32,16 @@ fn limit(store: &mut Store, timestamp: &str, used: &str) {
         json!({"type":"event_msg","timestamp":timestamp,"payload":{"type":"token_count","rate_limits":{"limit_id":"codex","secondary":{"used_percent":used,"window_minutes":10080}}}}),
     );
 }
+/// A sample carrying its window's reset time, as the source reports it.
+fn windowed_limit(store: &mut Store, timestamp: &str, used: &str, window: i64) {
+    let used: serde_json::Number = serde_json::from_str(used).unwrap();
+    let resets_at = 2_000_000_000_i64 + window * 604_800;
+    record(
+        store,
+        "limits",
+        json!({"type":"event_msg","timestamp":timestamp,"payload":{"type":"token_count","rate_limits":{"limit_id":"codex","secondary":{"used_percent":used,"window_minutes":10080,"resets_at":resets_at}}}}),
+    );
+}
 fn usage(store: &mut Store, thread: &str, timestamp: &str, model: &str) {
     record(
         store,
@@ -70,6 +80,68 @@ fn price(store: &mut Store) {
     while store.pricing_work_pending().unwrap() {
         store.process_pricing_work().unwrap();
     }
+}
+
+#[test]
+fn quota_intervals_and_cumulative_cost_survive_re_reported_snapshots() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&temp.path().join("stale.sqlite")).unwrap();
+    windowed_limit(&mut store, "2026-01-01T00:00:00Z", "10", 0);
+    usage(&mut store, "first", "2026-01-01T00:01:00Z", "priced");
+    windowed_limit(&mut store, "2026-01-01T00:02:00Z", "11", 0);
+    // A lagging session re-reports the snapshot the tick above replaced.
+    usage(&mut store, "between", "2026-01-01T00:02:15Z", "priced");
+    windowed_limit(&mut store, "2026-01-01T00:02:30Z", "10", 0);
+    usage(&mut store, "second", "2026-01-01T00:03:00Z", "priced");
+    windowed_limit(&mut store, "2026-01-01T00:04:00Z", "12", 0);
+    price(&mut store);
+    let response = read(&mut store, "2026-01-01T00:05:00Z", Range::All);
+    assert_eq!(response.weekly.stale_samples, 1);
+    let intervals = &response.quota_analysis.intervals;
+    assert_eq!(intervals.len(), 2);
+    for (index, (start, end, tokens)) in [
+        ("2026-01-01T00:00:00Z", "2026-01-01T00:02:00Z", "1000000"),
+        ("2026-01-01T00:02:00Z", "2026-01-01T00:04:00Z", "2000000"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(intervals[index].start, time(start));
+        assert_eq!(intervals[index].end, time(end));
+        assert_eq!(intervals[index].consumed_percentage_points, "1");
+        // Each interval keeps exactly the usage observed inside it: the stale
+        // sample neither ends an interval nor pulls usage the measured
+        // percentage has not accounted for into the earlier one.
+        assert_eq!(
+            intervals[index].tokens.total_tokens.known_tokens.as_deref(),
+            Some(tokens)
+        );
+    }
+    // One segment, so cumulative cost never restarts at a re-reported snapshot.
+    let points = &response.chart.points;
+    assert!(points
+        .iter()
+        .all(|point| point.segment_id == Some(time("2026-01-01T00:00:00Z").key())));
+    assert_eq!(
+        points
+            .last()
+            .unwrap()
+            .cumulative_estimated_cost
+            .as_ref()
+            .unwrap()
+            .known_subtotal
+            .as_deref(),
+        Some("3000000000000")
+    );
+    assert_eq!(
+        response
+            .chart
+            .boundaries
+            .iter()
+            .flat_map(|boundary| boundary.kinds.clone())
+            .collect::<Vec<_>>(),
+        vec![BoundaryKind::ObservationStart]
+    );
 }
 
 #[test]

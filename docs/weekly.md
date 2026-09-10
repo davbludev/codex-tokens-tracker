@@ -13,11 +13,21 @@ No app API data is read. Session weekly percentage impact is explicitly null;
 account-wide percentage is never distributed across sessions by tokens or cost.
 
 Samples sort by parsed source time, independent of ingestion order. Canonically
-equal timestamps and numerically equal percentage spellings count once. A strict
-decrease starts a cycle even before the expected reset. Missing, invalid, future
-timestamps or invalid percentages are retained but excluded, counted by
-`excludedSamples`. Decimal input is bounded to 256 bytes and exponent magnitude
-1024 before parsing; out-of-range values outside 0..100 are excluded.
+equal timestamps and numerically equal percentage spellings count once. Reported
+reset metadata identifies the window; the percentage never does. Concurrent
+sessions each report the same account-wide counter from their own snapshot, so a
+lower percentage arrives routinely at every tick. Within one window the counter
+cannot decrease, so a lower percentage, or any sample whose reset time belongs to
+an already superseded window, is a re-reported earlier snapshot: it is ignored
+and counted by `staleSamples`, never a cycle reset. A reset time that advances
+beyond a five-minute tolerance starts a cycle even before the expected reset and
+even when the new window's first percentage is not lower; smaller differences are
+the same window re-reported with its own jitter. Only where no window has ever
+been reported, or where the window's own reset time has already passed, does a
+strict decrease start a cycle by itself. Missing, invalid, future timestamps or
+invalid percentages are retained but excluded, counted by `excludedSamples`.
+Decimal input is bounded to 256 bytes and exponent magnitude 1024 before parsing;
+out-of-range values outside 0..100 are excluded.
 
 Conflicting percentages at one canonical timestamp form an ambiguous barrier.
 They neither assert a reset nor permit a comparable interval across the barrier.
@@ -87,7 +97,7 @@ denominator and unpriced usage. Storage corruption/overflow yields `storage`;
 invalid page requests yield `invalidQuery`.
 
 All estimates are labelled “since observation began” and `fullCycleCostKnown`
-is false: a detected decrease does not reveal cost between the true reset and
+is false: a detected reset does not reveal cost between the true reset and
 the first sample. These are observed local estimates for the current model mix,
 not OpenAI charges or proof of complete account usage. The database can scan and
 sort retained core samples; Rust retains only one tie group, current segment

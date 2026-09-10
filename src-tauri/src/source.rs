@@ -268,7 +268,7 @@ pub fn ingest_batch(store: &mut Store, path: &Path) -> Result<bool> {
                 end: cursor,
                 ordinal: progress.ordinal,
                 record: if progress.tail_discarding {
-                    Err("Record exceeds the bounded reader limit")
+                    Ok(adapter::Record::Unreadable)
                 } else {
                     adapter::decode(&tail)
                 },

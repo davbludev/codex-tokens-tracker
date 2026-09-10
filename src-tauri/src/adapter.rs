@@ -169,6 +169,8 @@ pub enum Record {
     },
     Ignore,
     UnsupportedEnvelope,
+    /// A record the bounded reader could not buffer, so its type is unknown.
+    Unreadable,
 }
 
 pub fn decode(line: &[u8]) -> Result<Record, &'static str> {

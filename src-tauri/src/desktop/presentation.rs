@@ -219,6 +219,7 @@ mod tests {
             history: Vec::new(),
             next_cursor: None,
             excluded_samples: 0,
+            stale_samples: 0,
             session_weekly_percentage_impact: None,
             coverage_note: "Observed local estimated cost",
         }

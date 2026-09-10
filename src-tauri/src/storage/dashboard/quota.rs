@@ -95,9 +95,9 @@ pub(super) fn read(
     let mut total_intervals = 0;
     weekly::scan(connection, now, &mut timeline, |timeline, time| {
         let current_segment = timeline.baseline.as_ref().map(|sample| sample.time);
-        let valid = time >= start
-            && !timeline.ambiguous
-            && timeline.latest.as_ref().is_some_and(|s| s.time == time);
+        // A re-reported earlier snapshot carries no percentage of its own: it
+        // must not end the interval its own segment is still accumulating.
+        let valid = time >= start && !timeline.ambiguous && timeline.latest.is_some();
         let continues = valid && segment == current_segment && anchor.is_some();
         while next
             .as_ref()

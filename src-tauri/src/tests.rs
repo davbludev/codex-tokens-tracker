@@ -149,7 +149,7 @@ fn recovery_v2_migration_and_snapshot_query_plan() {
             .connection()
             .query_row::<i64, _, _>("PRAGMA user_version", [], |r| r.get(0))
             .unwrap(),
-        11
+        13
     );
     assert_eq!(
         store.snapshot().unwrap().direct_tokens.as_deref(),
@@ -920,6 +920,114 @@ fn adapter_drops_content_and_preserves_missing_versus_null_categories() {
     assert!(metadata.get("source").is_none());
 }
 
+/// One record larger than the reader's bound, valid JSON the adapter never sees.
+fn oversized_line() -> String {
+    format!(
+        "{{\"type\":\"response_item\",\"payload\":{{\"content\":\"{}\"}}}}
+",
+        "a".repeat(3 * 1024 * 1024)
+    )
+}
+
+#[test]
+fn an_unreadable_record_is_skipped_and_later_usage_still_counts() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&temp.path().join("test.sqlite")).unwrap();
+    let path = temp.path().join("rollout-oversized.jsonl");
+    fs::write(
+        &path,
+        format!(
+            "{}{}{}",
+            line(&historical_record(1)),
+            oversized_line(),
+            line(&historical_record(2))
+        ),
+    )
+    .unwrap();
+    source::ingest(&mut store, &path).unwrap();
+    settle(&mut store);
+    assert_eq!(totals(&store), (2 * 26587, 0, 2));
+    let snapshot = store.snapshot().unwrap();
+    assert!(snapshot
+        .diagnostic
+        .unwrap()
+        .contains("exceeds the bounded reader limit"));
+    assert_eq!(
+        store
+            .connection()
+            .query_row::<i64, _, _>("SELECT COUNT(*) FROM sources WHERE halted=1", [], |r| r
+                .get(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn usage_hidden_inside_an_unreadable_record_leaves_the_rest_unavailable() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&temp.path().join("test.sqlite")).unwrap();
+    let path = temp.path().join("rollout-hidden.jsonl");
+    // The counters of the third record only bridge the second, which the reader
+    // could not buffer: its usage is never invented from the difference.
+    fs::write(
+        &path,
+        format!(
+            "{}{}{}",
+            line(&historical_record(1)),
+            oversized_line(),
+            line(&historical_record(3))
+        ),
+    )
+    .unwrap();
+    source::ingest(&mut store, &path).unwrap();
+    settle(&mut store);
+    assert_eq!(totals(&store), (26587, 1, 1));
+}
+
+#[test]
+fn migration_013_returns_records_after_an_unreadable_one_to_accounting() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("migrate.sqlite");
+    let mut store = Store::open(&db).unwrap();
+    let path = temp.path().join("rollout-oversized.jsonl");
+    fs::write(
+        &path,
+        format!(
+            "{}{}{}",
+            line(&historical_record(1)),
+            oversized_line(),
+            line(&historical_record(2))
+        ),
+    )
+    .unwrap();
+    source::ingest(&mut store, &path).unwrap();
+    settle(&mut store);
+    // Shape a database written while an unreadable record stopped the source.
+    store
+        .connection()
+        .execute_batch(
+            "UPDATE sources SET halted=1,diagnostic='Record exceeds the bounded reader limit';
+             UPDATE observations SET state='rejected',accepted=0,total=NULL,
+               diagnostic='Source accounting stopped after an unsupported record'
+             WHERE timestamp>'2026-01-01T00:00:01Z';
+             DELETE FROM observation_valuations; DELETE FROM reconciliation_work;
+             PRAGMA user_version=12;",
+        )
+        .unwrap();
+    drop(store);
+    let mut store = Store::open(&db).unwrap();
+    settle(&mut store);
+    assert_eq!(totals(&store), (2 * 26587, 0, 2));
+    assert_eq!(
+        store
+            .connection()
+            .query_row::<i64, _, _>("SELECT COUNT(*) FROM sources WHERE halted=1", [], |r| r
+                .get(0))
+            .unwrap(),
+        0
+    );
+}
+
 #[test]
 fn unknown_envelopes_do_not_suppress_reconciled_modern_usage() {
     let temp = tempfile::tempdir().unwrap();
@@ -1089,6 +1197,114 @@ fn settle(store: &mut Store) {
 
 fn totals(store: &Store) -> (i64, i64, i64) {
     store.connection().query_row("SELECT COALESCE(SUM(total),0),COALESCE(SUM(state='pending'),0),COALESCE(SUM(state='accepted'),0) FROM observations",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap()
+}
+
+/// The rollout of a subagent starts with its own metadata and then replays the
+/// metadata of the session that spawned it.
+fn subagent_records(child: &str, parent: &str) -> [serde_json::Value; 4] {
+    let mut usage = historical_record(1);
+    usage["payload"]["thread_id"] = child.into();
+    usage["payload"]["session_id"] = parent.into();
+    let mut later = usage.clone();
+    later["timestamp"] = "2026-01-01T00:02:00Z".into();
+    later["payload"]["response_id"] = "child-response-2".into();
+    for (key, factor) in [("usage", 1), ("thread_token_usage", 2)] {
+        for counter in later["payload"][key].as_object_mut().unwrap().values_mut() {
+            *counter = (counter.as_i64().unwrap() * factor).into();
+        }
+    }
+    [
+        serde_json::json!({"type":"session_meta","payload":{
+            "id":child,"session_id":parent,"parent_thread_id":parent,"cwd":"C:/workspace/a",
+            "source":{"subagent":{"thread_spawn":{"parent_thread_id":parent}}}}}),
+        serde_json::json!({"type":"session_meta","payload":{
+            "id":parent,"session_id":parent,"cwd":"C:/workspace/a","source":"vscode"}}),
+        usage,
+        later,
+    ]
+}
+
+fn halted(store: &Store, path: &str) -> i64 {
+    store
+        .connection()
+        .query_row("SELECT halted FROM sources WHERE path=?", [path], |r| {
+            r.get(0)
+        })
+        .unwrap()
+}
+
+#[test]
+fn subagent_spawn_context_metadata_keeps_its_own_usage_accounted() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&temp.path().join("spawn.sqlite")).unwrap();
+    for record in subagent_records("child-a", "root-a") {
+        record_in_store(&mut store, "child-source", &record);
+    }
+    settle(&mut store);
+    assert_eq!(halted(&store, "child-source"), 0);
+    assert_eq!(totals(&store), (2 * 26587, 0, 2));
+    let (thread, parent, placeholder): (String, Option<String>, i64) = store.connection().query_row(
+        "SELECT s.thread_id,e.parent_thread_id,(SELECT is_placeholder FROM sessions WHERE thread_id='root-a') FROM sources s JOIN sessions e ON e.thread_id=s.thread_id WHERE s.path='child-source'",
+        [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+    assert_eq!(
+        thread, "child-a",
+        "the replayed metadata never rebinds the source"
+    );
+    assert_eq!(parent.as_deref(), Some("root-a"));
+    assert_eq!(
+        placeholder, 1,
+        "a replayed spawn context is not an observation of the parent's own session"
+    );
+}
+
+#[test]
+fn a_second_identity_that_is_not_the_spawn_context_still_halts_the_source() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&temp.path().join("stranger.sqlite")).unwrap();
+    let [own, _, usage, later] = subagent_records("child-a", "root-a");
+    record_in_store(&mut store, "child-source", &own);
+    record_in_store(
+        &mut store,
+        "child-source",
+        &serde_json::json!({"type":"session_meta","payload":{"id":"stranger","cwd":"C:/workspace/b"}}),
+    );
+    for record in [usage, later] {
+        record_in_store(&mut store, "child-source", &record);
+    }
+    settle(&mut store);
+    assert_eq!(halted(&store, "child-source"), 1);
+    assert_eq!(totals(&store), (0, 0, 0));
+}
+
+#[test]
+fn migration_012_returns_halted_subagent_usage_to_accounting() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("migrate.sqlite");
+    let mut store = Store::open(&path).unwrap();
+    for record in subagent_records("child-a", "root-a") {
+        record_in_store(&mut store, "child-source", &record);
+    }
+    settle(&mut store);
+    // Shape a database written while the spawn context was read as a conflict.
+    store.connection().execute_batch(
+        "UPDATE sources SET halted=1,diagnostic='Conflicting direct session identity' WHERE path='child-source';
+         UPDATE observations SET state='rejected',accepted=0,total=NULL,
+           diagnostic='Source accounting stopped after an unsupported record';
+         DELETE FROM observation_valuations; DELETE FROM reconciliation_work;
+         PRAGMA user_version=11;",
+    ).unwrap();
+    drop(store);
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(
+        store
+            .connection()
+            .query_row::<i64, _, _>("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap(),
+        13
+    );
+    settle(&mut store);
+    assert_eq!(halted(&store, "child-source"), 0);
+    assert_eq!(totals(&store), (2 * 26587, 0, 2));
 }
 
 #[test]
@@ -1917,7 +2133,7 @@ fn version_one_migration_preserves_usage_and_promotes_its_pending_gap() {
         .connection()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 11);
+    assert_eq!(version, 13);
     assert_eq!(totals(&store), (4 * 26587, 0, 4));
 }
 
