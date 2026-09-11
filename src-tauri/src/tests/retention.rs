@@ -263,7 +263,7 @@ fn migration_010_enqueues_one_valuation_job_per_priced_model() {
         .unwrap();
     drop(store);
     let mut store = Store::open(&path).unwrap();
-    assert_eq!(count(&store, "PRAGMA user_version"), 13);
+    assert_eq!(count(&store, "PRAGMA user_version"), 14);
     let jobs = store
         .connection()
         .prepare("SELECT version_id,after_id,through_id FROM pricing_work ORDER BY version_id")

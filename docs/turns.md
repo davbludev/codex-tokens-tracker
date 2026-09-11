@@ -15,6 +15,17 @@ Model and reasoning conflict independently: two turn contexts disagreeing about
 the model make only the model unavailable, and disagreeing about the effort makes
 only the effort unavailable. Each records its own source diagnostic.
 
+Codex writes no `turn_context` for a turn it starts on its own, such as context
+compaction. That turn still ran under the thread's prevailing settings, so its
+usage inherits the model and effort of the latest earlier attributed observation
+of the same thread, whatever order sources were imported in. A recorded context
+is always the turn's own evidence and is never overridden — including where a
+disagreement already erased one of its attributes, which stays unavailable.
+Unattributed usage can never be valued, and one such turn used to leave the
+weekly cost-per-percentage-point estimate unavailable for the rest of the cycle.
+Schema version 14 applies the same rule once to usage already stored without
+attribution, and values it; durable valuations are never rewritten.
+
 Effort was added in schema version 11. Turns imported before that carry no
 effort and report reasoning as unavailable; history is never re-imported to
 invent one.

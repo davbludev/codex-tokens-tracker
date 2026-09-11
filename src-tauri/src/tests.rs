@@ -149,7 +149,7 @@ fn recovery_v2_migration_and_snapshot_query_plan() {
             .connection()
             .query_row::<i64, _, _>("PRAGMA user_version", [], |r| r.get(0))
             .unwrap(),
-        13
+        14
     );
     assert_eq!(
         store.snapshot().unwrap().direct_tokens.as_deref(),
@@ -1158,6 +1158,81 @@ fn conflicting_model_context_invalidates_history_across_restart_and_replay() {
     );
 }
 
+/// One more accepted record of the fixture thread, on its own turn.
+fn continuation(sequence: i64, turn: &str, response: &str) -> serde_json::Value {
+    let mut value = modern();
+    value["timestamp"] = format!("2026-01-01T11:{:02}:00.000Z", 34 + sequence).into();
+    value["payload"]["turn_id"] = turn.into();
+    value["payload"]["root_turn_id"] = turn.into();
+    value["payload"]["response_id"] = response.into();
+    for counter in value["payload"]["thread_token_usage"]
+        .as_object_mut()
+        .unwrap()
+        .values_mut()
+    {
+        *counter = (counter.as_i64().unwrap() * sequence).into();
+    }
+    value
+}
+
+fn attribution(store: &Store, response: &str) -> (Option<String>, Option<String>) {
+    store
+        .connection()
+        .query_row(
+            "SELECT model,effort FROM observations WHERE response_id=?",
+            [response],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+}
+
+#[test]
+fn undescribed_turn_usage_inherits_prevailing_thread_attribution() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("attribution.sqlite");
+    let path = temp.path().join("rollout-attribution.jsonl");
+    fs::write(&path, ACTIVE).unwrap();
+    let mut store = Store::open(&db).unwrap();
+    source::ingest(&mut store, &path).unwrap();
+    append(&path, "{\"timestamp\":\"2026-01-01T11:35:00.000Z\",\"type\":\"turn_context\",\"payload\":{\"turn_id\":\"second-turn\",\"model\":\"gpt-6-astra\",\"effort\":\"xhigh\"}}\n");
+    append(&path, &line(&continuation(2, "second-turn", "second")));
+    // Context compaction starts a turn the source never describes.
+    append(&path, &line(&continuation(3, "compaction-turn", "system")));
+    source::ingest(&mut store, &path).unwrap();
+    assert_eq!(
+        attribution(&store, "active-response"),
+        (Some("gpt-5.6-terra".into()), None)
+    );
+    let prevailing = (Some("gpt-6-astra".into()), Some("xhigh".into()));
+    assert_eq!(attribution(&store, "second"), prevailing);
+    assert_eq!(attribution(&store, "system"), prevailing);
+    assert_eq!(
+        store.snapshot().unwrap().direct_tokens.as_deref(),
+        Some("79761") // Three accepted 26587-token records.
+    );
+}
+
+#[test]
+fn undescribed_turn_usage_without_earlier_attribution_stays_unattributed() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("unattributed.sqlite");
+    let path = temp.path().join("rollout-unattributed.jsonl");
+    let mut meta: serde_json::Value = serde_json::from_str(ACTIVE.lines().next().unwrap()).unwrap();
+    meta["payload"]["id"] = "root-system".into();
+    meta["payload"]["session_id"] = "root-system".into();
+    let mut usage = continuation(1, "compaction-turn", "system");
+    usage["payload"]["thread_id"] = "root-system".into();
+    usage["payload"]["session_id"] = "root-system".into();
+    fs::write(&path, format!("{}{}", line(&meta), line(&usage))).unwrap();
+    let mut store = Store::open(&db).unwrap();
+    source::ingest(&mut store, &path).unwrap();
+    assert_eq!(attribution(&store, "system"), (None, None));
+    assert_eq!(
+        store.snapshot().unwrap().direct_tokens.as_deref(),
+        Some("26587")
+    );
+}
+
 fn historical_record(sequence: i64) -> serde_json::Value {
     let mut value = modern();
     value["timestamp"] = format!("2026-01-01T00:{:02}:{:02}Z", sequence / 60, sequence % 60).into();
@@ -1300,7 +1375,7 @@ fn migration_012_returns_halted_subagent_usage_to_accounting() {
             .connection()
             .query_row::<i64, _, _>("PRAGMA user_version", [], |r| r.get(0))
             .unwrap(),
-        13
+        14
     );
     settle(&mut store);
     assert_eq!(halted(&store, "child-source"), 0);
@@ -2133,7 +2208,7 @@ fn version_one_migration_preserves_usage_and_promotes_its_pending_gap() {
         .connection()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 13);
+    assert_eq!(version, 14);
     assert_eq!(totals(&store), (4 * 26587, 0, 4));
 }
 

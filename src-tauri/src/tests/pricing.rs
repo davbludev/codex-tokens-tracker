@@ -868,3 +868,63 @@ fn pricing_breakdown_categories_add_up_to_the_valuation_under_every_policy() {
         );
     }
 }
+
+#[test]
+fn migration_attributes_and_values_usage_whose_turn_was_never_described() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("attribution-migration.sqlite");
+    let mut store = Store::open(&db).unwrap();
+    context(&mut store, "history", "thread", Some("alpha"));
+    let described = usage(&mut store, "history", "thread", 1, "2026-01-01T00:00:01Z");
+    let system = usage(&mut store, "history", "thread", 2, "2026-01-01T00:00:02Z");
+    // Usage stored the way a compaction turn was before this migration: no
+    // attribution of its own, so no configured price could ever value it.
+    store
+        .connection()
+        .execute_batch(&format!(
+            "UPDATE observations SET model=NULL,effort=NULL WHERE id={system}"
+        ))
+        .unwrap();
+    store
+        .save_model_price_at("alpha", prices(), true, time("2026-01-02T00:00:00Z"))
+        .unwrap();
+    drain(&mut store);
+    let valuation = |store: &Store, id: i64| -> Option<String> {
+        use rusqlite::OptionalExtension;
+        store
+            .connection()
+            .query_row(
+                "SELECT amount FROM observation_valuations WHERE observation_id=?",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap()
+    };
+    assert!(valuation(&store, described).is_some());
+    assert_eq!(valuation(&store, system), None);
+    store
+        .connection()
+        .execute_batch("PRAGMA user_version=13")
+        .unwrap();
+    drop(store);
+    let store = Store::open(&db).unwrap();
+    assert_eq!(
+        store
+            .connection()
+            .query_row(
+                "SELECT model,effort FROM observations WHERE id=?",
+                [system],
+                |r| Ok((
+                    r.get::<_, Option<String>>(0)?,
+                    r.get::<_, Option<String>>(1)?
+                ))
+            )
+            .unwrap(),
+        (Some("alpha".into()), None)
+    );
+    // Equal usage at one price version: the recovered valuation matches.
+    assert_eq!(valuation(&store, system), valuation(&store, described));
+    // Already durable valuations and a settled schema are left alone.
+    assert!(!store.pricing_work_pending().unwrap());
+}

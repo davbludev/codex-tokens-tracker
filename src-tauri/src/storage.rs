@@ -101,7 +101,7 @@ impl Store {
         let mut connection = Connection::open(path)?;
         connection.busy_timeout(std::time::Duration::from_secs(3))?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > 13 {
+        if version > 14 {
             return Err(Error::Schema);
         }
         if version == 0 {
@@ -189,6 +189,38 @@ impl Store {
         if version < 13 {
             let tx = connection.transaction()?;
             tx.execute_batch(include_str!("../migrations/013_unreadable_record_is_a_gap.sql"))?;
+            tx.commit()?;
+        }
+        if version < 14 {
+            let tx = connection.transaction()?;
+            tx.execute_batch(include_str!(
+                "../migrations/014_prevailing_turn_attribution.sql"
+            ))?;
+            // Only usage the source never attributed is revisited, and a
+            // durable valuation still wins over attribution learned later.
+            let unattributed = {
+                let mut query = tx.prepare("SELECT id,thread_id,time_seconds,time_nanos FROM observations WHERE model IS NULL AND time_seconds IS NOT NULL AND time_nanos IS NOT NULL ORDER BY id")?;
+                let rows = query.query_map([], |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, u32>(3)?,
+                    ))
+                })?;
+                rows.collect::<std::result::Result<Vec<_>, _>>()?
+            };
+            for (id, thread, seconds, nanos) in unattributed {
+                if let Some((model, effort)) =
+                    prevailing_attribution(&tx, &thread, (seconds, nanos, id))?
+                {
+                    tx.execute(
+                        "UPDATE observations SET model=?,effort=? WHERE id=?",
+                        params![model, effort, id],
+                    )?;
+                    pricing::value_observation(&tx, id)?;
+                }
+            }
             tx.commit()?;
         }
         Ok(Self { connection })
@@ -787,6 +819,24 @@ fn diagnostic(tx: &Transaction<'_>, path: &str, message: &str, halt: bool) -> Re
     )?;
     Ok(())
 }
+/// Codex describes a turn it starts on its own, such as context compaction,
+/// with no `turn_context`. That turn still ran under the thread's prevailing
+/// settings: the model and reasoning effort of the latest earlier attributed
+/// observation of the same thread, whatever order sources were imported in.
+fn prevailing_attribution(
+    tx: &Transaction<'_>,
+    thread: &str,
+    before: (i64, u32, i64),
+) -> Result<Option<(String, Option<String>)>> {
+    Ok(tx
+        .query_row(
+            "SELECT model,effort FROM observations WHERE thread_id=? AND model IS NOT NULL AND time_seconds IS NOT NULL AND time_nanos IS NOT NULL AND (time_seconds,time_nanos,id)<(?,?,?) ORDER BY time_seconds DESC,time_nanos DESC,id DESC LIMIT 1",
+            params![thread, before.0, before.1, before.2],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?)
+}
+
 fn ingest_usage(
     tx: &Transaction<'_>,
     path: &str,
@@ -864,15 +914,24 @@ fn ingest_usage(
     if let Some(message) = message {
         diagnostic(tx, path, message, true)?;
     }
-    let (model, effort): (Option<String>, Option<String>) = tx
+    let parsed = time.ok();
+    let recorded: Option<(Option<String>, Option<String>)> = tx
         .query_row(
             "SELECT model,effort FROM turn_contexts WHERE thread_id=? AND turn_id=?",
             params![usage.thread_id, usage.turn_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
-        .optional()?
-        .unwrap_or((None, None));
-    let parsed = time.ok();
+        .optional()?;
+    let (model, effort) = match (recorded, parsed) {
+        // A recorded context is the turn's own evidence, including where a
+        // disagreement already erased one of its attributes.
+        (Some(context), _) => context,
+        (None, Some((seconds, nanos))) => {
+            prevailing_attribution(tx, &usage.thread_id, (seconds, nanos, i64::MAX))?
+                .map_or((None, None), |(model, effort)| (Some(model), effort))
+        }
+        (None, None) => (None, None),
+    };
     tx.execute("INSERT INTO observations(thread_id,endpoint,response_id,timestamp,normalized,adapter,source_path,source_offset,source_ordinal,model,effort,accepted,total,diagnostic,source_generation,state,time_seconds,time_nanos,endpoint_order,start_order) VALUES(?,?,?,?,?,?,?,?,?,?,?,0,NULL,?,?,?,?,?,?,?)",
         params![usage.thread_id, endpoint, usage.response_id, timestamp, encoded, adapter::VERSION, path, offset, ordinal, model, effort, message,generation,if validation.is_ok() { "pending" } else { "rejected" },parsed.map(|t| t.0),parsed.map(|t| t.1),accounting::endpoint_key(&usage.thread_token_usage),accounting::start_key(&usage.usage,&usage.thread_token_usage)])?;
     if validation.is_ok() {

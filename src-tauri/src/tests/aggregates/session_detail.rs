@@ -154,6 +154,16 @@ fn session_detail_models_conserve_categories_shares_and_retained_unknown_valuati
     assert_eq!(cost(&unknown.direct), (Some("2"), true));
     assert_eq!(unknown.cost_share.as_deref(), Some("3.13"));
     assert!(unknown.direct.coverage.unknown_model);
+    // A turn whose own contexts disagree stays unattributed, and therefore
+    // unpriced, even though a turn the source never described would inherit
+    // the thread's prevailing attribution.
+    for model in ["beta", "conflicting"] {
+        record_in_store(
+            &mut store,
+            "root",
+            &serde_json::json!({"type":"turn_context","payload":{"turn_id":"root-3","model":model}}),
+        );
+    }
     observation(&mut store, "root", 3, 4, 68, "2026-01-01T00:00:03Z", None);
     let rows = models(&mut store, "root", None, 50);
     assert_eq!(cost(&rows.direct), (Some("64"), false));
