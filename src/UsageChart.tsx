@@ -2,10 +2,12 @@ import { useEffect, useId, useRef, useState } from "react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 import { compactCost, compactTokens, costText, exactTime, exactTokens, localTime } from "./dashboard-data";
-import type { LocalUsage, UsageBin } from "./dashboard-types";
+import type { LocalUsage, UsageBin, TimeWindow } from "./dashboard-types";
+import { attachTimeNavigation } from "./time-navigation";
 
 /** Only canvas coordinates are floating point; inspection uses the native exact values. */
-export function UsageChart({ usage, kind, onOpenPricing }: { usage: LocalUsage; kind: "tokens" | "cost"; onOpenPricing?: () => void }) {
+export function UsageChart({ usage, kind, onOpenPricing, selectWindow }: { usage: LocalUsage; kind: "tokens" | "cost"; onOpenPricing?: () => void; selectWindow?: (window: TimeWindow) => void }) {
+  const selection = useRef(selectWindow); selection.current = selectWindow;
   const host = useRef<HTMLDivElement>(null);
   const id = useId();
   const [selected, setSelected] = useState(0);
@@ -42,9 +44,10 @@ export function UsageChart({ usage, kind, onOpenPricing }: { usage: LocalUsage; 
       series: [{}, { label: isCost ? "Estimated cost" : "Total tokens", fill: color, stroke: color, width: 0, paths: bars, points: { show: false } }, { label: "Incomplete known subtotal", fill: "#e5b96f", stroke: "#e5b96f", width: 0, paths: bars, points: { show: false } }],
       hooks: { setCursor: [plot => { const index = plot.cursor.idx == null ? undefined : lookup.get(plot.cursor.idx); setHovered(index ?? null); if (index !== undefined) setSelected(index); }] },
     }, [Array.from({ length: usage.binCount }, (_, index) => start + (index + .5) * (end - start) / usage.binCount), values, partial], host.current);
+    const detach = attachTimeNavigation(plot, window => selection.current?.(window));
     const resize = new ResizeObserver(() => { if (host.current) plot.setSize({ width: Math.max(220, host.current.clientWidth), height: 220 }); });
     resize.observe(host.current);
-    return () => { resize.disconnect(); plot.destroy(); };
+    return () => { detach(); resize.disconnect(); plot.destroy(); };
   }, [usage, isCost, noPrices]);
   return <section className={"dashboard-panel usage-chart usage-chart-" + kind} aria-labelledby={id + "-heading"}>
     <div className="chart-panel-heading"><div><h2 id={id + "-heading"}>{isCost ? "Estimated cost over time" : "Token activity"}</h2><p>{isCost ? "USD at your configured prices" : "Total tokens per time bin"}</p></div><span className={"chart-color-dot " + kind} aria-hidden="true" /></div>

@@ -251,6 +251,8 @@ export function installDashboardFixture() {
   };
 
   const state = window.dashboardTest = { calls: [], callbacks: {}, listeners: new Set(), response };
+  const callSplit = { input: { tokens: category(1637), estimatedCost: cost(usd(.05)) }, cachedInput: { tokens: category(24482), estimatedCost: cost(usd(.012)) }, cacheWrites: { tokens: category(0), estimatedCost: cost("0") }, output: { tokens: category(468), estimatedCost: cost(usd(.07)) } };
+  const previewCalls = Array.from({ length: 24 }, (_, index) => ({ id: String(index + 1), time: time(chartStart + Math.round((index + .5) / 24 * (now - chartStart))), threadId: index % 2 ? "preview-project-task" : "preview-research-subagent", turnId: "preview-turn", responseId: `preview-response-${index + 1}`, model: index % 2 ? "gpt-6-astra" : "gpt-5.6-sol", effort: "high", tokens: tokens(26119, 24482, 0, 468, 398), categories: callSplit, estimatedCost: cost(usd(.132)), priceVersionId: "1", price: null, categoryReason: null }));
   state.callbacks.broadcast = event => { for (const handler of state.listeners) state.callbacks[handler](event); };
   window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: (_event, id) => state.listeners.delete(id) };
   window.__TAURI_INTERNALS__ = {
@@ -259,6 +261,11 @@ export function installDashboardFixture() {
       if (command === "plugin:event|listen") { state.listeners.add(args.handler); return args.handler; }
       if (command === "usage_snapshot") return { threadId: null, directTokens: null, observedAt: null, sourceAvailable: true, coverage: "Preview fixture", diagnostic: null };
       if (command === "pricing_models") return { models: [], nextCursor: null };
+      if (command === "usage_calls") {
+        const q = args.query, selected = previewCalls.filter(call => call.time.seconds > q.start.seconds && call.time.seconds <= q.end.seconds && (!q.model || q.model === call.model) && (!q.thread || q.thread === call.threadId));
+        return { start: q.start, end: q.end, items: selected, totalItems: selected.length, summary: { categories: Object.fromEntries(Object.entries(callSplit).map(([key, value]) => [key, { tokens: category(BigInt(value.tokens.knownTokens) * BigInt(selected.length)), estimatedCost: cost(String(BigInt(value.estimatedCost.knownSubtotal) * BigInt(selected.length))) }])), estimatedCost: cost(String(BigInt(usd(.132)) * BigInt(selected.length))) }, nextCursor: null };
+      }
+      if (command === "usage_call_activity") return { events: [], nextCursor: null, scannedBytes: 0, totalBytes: 0, complete: false, association: "unavailable", notices: ["Preview fixture: no source-log content is loaded."] };
       if (command !== "usage_dashboard") return null;
       state.calls.push(args.query);
       const result = structuredClone(state.response);

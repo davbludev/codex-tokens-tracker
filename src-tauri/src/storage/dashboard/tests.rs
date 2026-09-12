@@ -262,11 +262,242 @@ fn read(store: &mut Store, now: &str, range: Range) -> dto::Response {
             Query {
                 range,
                 point_budget: None,
+                start: None,
+                end: None,
+                duration_seconds: None,
                 breakdown_metric: Default::default(),
             },
             time(now),
         )
         .unwrap()
+}
+
+fn custom(store: &mut Store, start: &str, end: &str, now: &str) -> dto::Response {
+    store
+        .dashboard_at(
+            Query {
+                range: Range::Custom,
+                start: Some(time(start)),
+                end: Some(time(end)),
+                duration_seconds: None,
+                point_budget: Some(64),
+                breakdown_metric: Default::default(),
+            },
+            time(now),
+        )
+        .unwrap()
+}
+
+#[test]
+fn custom_interval_requeries_exact_usage_and_keeps_historical_chart_baselines() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&temp.path().join("custom.sqlite")).unwrap();
+    for (timestamp, used) in [
+        ("2026-01-01T00:00:00Z", "10"),
+        ("2026-01-01T00:02:00Z", "11"),
+        ("2026-01-01T00:04:00Z", "12"),
+        ("2026-01-01T00:06:00Z", "13"),
+    ] {
+        limit(&mut store, timestamp, used);
+    }
+    for (id, timestamp) in [
+        ("outside", "2026-01-01T00:01:00Z"),
+        ("edge", "2026-01-01T00:01:45Z"),
+        ("middle", "2026-01-01T00:03:00Z"),
+        ("last", "2026-01-01T00:05:00Z"),
+        ("tail", "2026-01-01T00:06:15Z"),
+    ] {
+        usage(&mut store, id, timestamp, "priced");
+    }
+    price(&mut store);
+    let whole = read(&mut store, "2026-01-01T00:10:00Z", Range::All);
+    let selected = custom(
+        &mut store,
+        "2026-01-01T00:01:30Z",
+        "2026-01-01T00:06:30Z",
+        "2026-01-01T00:10:00Z",
+    );
+    assert_eq!(selected.chart.start, selected.local_usage.start);
+    assert_eq!(selected.chart.end, selected.local_usage.end);
+    assert_eq!(selected.turn_activity.start, selected.chart.start);
+    assert_eq!(selected.turn_activity.end, selected.chart.end);
+    assert_eq!(
+        selected
+            .local_usage
+            .summary
+            .tokens
+            .total_tokens
+            .known_tokens
+            .as_deref(),
+        Some("4000000")
+    );
+    assert_eq!(
+        selected
+            .local_usage
+            .summary
+            .estimated_cost
+            .known_subtotal
+            .as_deref(),
+        Some("4000000000000")
+    );
+    for point in &selected.chart.points {
+        let original = whole
+            .chart
+            .points
+            .iter()
+            .find(|original| original.time == point.time)
+            .unwrap();
+        assert_eq!(
+            original.effective_usd_per_percent,
+            point.effective_usd_per_percent
+        );
+        assert_eq!(
+            original
+                .cumulative_estimated_cost
+                .as_ref()
+                .unwrap()
+                .known_subtotal,
+            point
+                .cumulative_estimated_cost
+                .as_ref()
+                .unwrap()
+                .known_subtotal
+        );
+    }
+    let estimate = &selected.range_quota.segments[0];
+    assert_eq!(estimate.start, Some(time("2026-01-01T00:02:00Z")));
+    assert_eq!(estimate.end, Some(time("2026-01-01T00:06:00Z")));
+    assert_eq!(
+        estimate
+            .estimated_cost
+            .as_ref()
+            .unwrap()
+            .known_subtotal
+            .as_deref(),
+        Some("2000000000000")
+    );
+    assert_eq!(
+        selected
+            .range_quota
+            .unmatched_cost
+            .as_ref()
+            .unwrap()
+            .known_subtotal
+            .as_deref(),
+        Some("1000000000000")
+    );
+    let narrow = custom(
+        &mut store,
+        "2026-01-01T00:03:00Z",
+        "2026-01-01T00:05:00Z",
+        "2026-01-01T00:10:00Z",
+    );
+    assert_eq!(narrow.available_start, Some(time("2026-01-01T00:00:00Z")));
+    assert_eq!(narrow.available_end, Some(time("2026-01-01T00:06:15Z")));
+    let before_history = custom(
+        &mut store,
+        "2025-12-31T00:00:00Z",
+        "2025-12-31T01:00:00Z",
+        "2026-01-01T00:10:00Z",
+    );
+    assert_eq!(before_history.available_start, narrow.available_start);
+    assert_eq!(before_history.available_end, narrow.available_end);
+    assert!(before_history.local_usage.points.is_empty());
+    assert_eq!(
+        narrow
+            .local_usage
+            .summary
+            .tokens
+            .total_tokens
+            .known_tokens
+            .as_deref(),
+        Some("1000000")
+    );
+    assert_eq!(
+        narrow.range_quota.latest.as_ref().unwrap().time,
+        time("2026-01-01T00:04:00Z")
+    );
+    assert_eq!(
+        narrow.range_quota.segments[0].unavailable_reason,
+        Some(Unavailable::InsufficientObservations)
+    );
+}
+
+#[test]
+fn custom_quota_resets_nanos_and_trailing_validation() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&temp.path().join("custom-reset.sqlite")).unwrap();
+    for (timestamp, used) in [
+        ("2026-01-01T00:00:01Z", "98"),
+        ("2026-01-01T00:00:03Z", "99"),
+        ("2026-01-01T00:00:05Z", "0"),
+        ("2026-01-01T00:00:07Z", "0.5"),
+    ] {
+        limit(&mut store, timestamp, used);
+    }
+    usage(&mut store, "first", "2026-01-01T00:00:02Z", "priced");
+    usage(&mut store, "second", "2026-01-01T00:00:06Z", "priced");
+    price(&mut store);
+    let selected = custom(
+        &mut store,
+        "2026-01-01T00:00:00Z",
+        "2026-01-01T00:00:08Z",
+        "2026-01-01T00:00:10Z",
+    );
+    assert_eq!(selected.range_quota.total_segments, 2);
+    assert!(selected.range_quota.segments[0]
+        .effective_usd_per_percent
+        .is_some());
+    assert_eq!(
+        selected.range_quota.segments[1].unavailable_reason,
+        Some(Unavailable::BelowOnePercentagePoint)
+    );
+    let nano = custom(
+        &mut store,
+        "2026-01-01T00:00:01.999999999Z",
+        "2026-01-01T00:00:02Z",
+        "2026-01-01T00:00:10Z",
+    );
+    assert_eq!(
+        nano.local_usage
+            .summary
+            .tokens
+            .total_tokens
+            .known_tokens
+            .as_deref(),
+        Some("1000000")
+    );
+    let empty = custom(
+        &mut store,
+        "2026-01-01T00:00:02Z",
+        "2026-01-01T00:00:02.000000001Z",
+        "2026-01-01T00:00:10Z",
+    );
+    assert!(empty.local_usage.points.is_empty());
+    let trailing = store
+        .dashboard_at(
+            Query {
+                range: Range::Trailing,
+                start: None,
+                end: None,
+                duration_seconds: Some(4),
+                point_budget: None,
+                breakdown_metric: Default::default(),
+            },
+            time("2026-01-01T00:00:10Z"),
+        )
+        .unwrap();
+    assert_eq!(trailing.local_usage.start, time("2026-01-01T00:00:06Z"));
+    assert!(trailing.local_usage.points.is_empty());
+    for value in [
+        json!({"range":"custom","start":{"seconds":2,"nanos":0},"end":{"seconds":1,"nanos":0}}),
+        json!({"range":"custom","start":{"seconds":1,"nanos":1000000000},"end":{"seconds":2,"nanos":0}}),
+        json!({"range":"trailing","durationSeconds":0}),
+        json!({"range":"all","durationSeconds":5}),
+    ] {
+        let query: Query = serde_json::from_value(value).unwrap();
+        assert!(query.validate().is_err());
+    }
 }
 
 fn local_usage(
@@ -561,6 +792,9 @@ fn dashboard_breakdowns_rank_full_range_keep_unknown_and_conserve_remainder() {
             Query {
                 range: Range::Last24Hours,
                 point_budget: Some(8),
+                start: None,
+                end: None,
+                duration_seconds: None,
                 breakdown_metric: dto::BreakdownMetric::Cost,
             },
             time("2026-01-03T00:00:00Z"),
@@ -871,6 +1105,9 @@ fn dashboard_downsampling_retains_actual_extrema_and_caps_boundary_overload() {
             Query {
                 range: Range::All,
                 point_budget: Some(budget),
+                start: None,
+                end: None,
+                duration_seconds: None,
                 breakdown_metric: Default::default(),
             }
             .validate(),
@@ -881,6 +1118,9 @@ fn dashboard_downsampling_retains_actual_extrema_and_caps_boundary_overload() {
         Query {
             range: Range::All,
             point_budget: None,
+            start: None,
+            end: None,
+            duration_seconds: None,
             breakdown_metric: Default::default(),
         }
         .validate(),
@@ -890,6 +1130,9 @@ fn dashboard_downsampling_retains_actual_extrema_and_caps_boundary_overload() {
         Query {
             range: Range::All,
             point_budget: Some(15),
+            start: None,
+            end: None,
+            duration_seconds: None,
             breakdown_metric: Default::default(),
         }
         .validate(),
@@ -919,6 +1162,9 @@ fn dashboard_empty_read_only_serialization_and_invalid_input() {
         Query {
             range: Range::All,
             point_budget: Some(8),
+            start: None,
+            end: None,
+            duration_seconds: None,
             breakdown_metric: Default::default(),
         }
     )
@@ -930,6 +1176,9 @@ fn dashboard_empty_read_only_serialization_and_invalid_input() {
             Query {
                 range: Range::All,
                 point_budget: None,
+                start: None,
+                end: None,
+                duration_seconds: None,
                 breakdown_metric: Default::default(),
             }
         )
@@ -954,6 +1203,9 @@ fn dashboard_range_boundaries_are_exact() {
             Query {
                 range,
                 point_budget: None,
+                start: None,
+                end: None,
+                duration_seconds: None,
                 breakdown_metric: Default::default(),
             }
             .start(now, None, None),
@@ -1511,7 +1763,11 @@ fn model_costs_fold_the_remainder_and_keep_partly_priced_models_honest() {
 
     let response = read(&mut store, "2026-01-03T00:00:00Z", Range::Last24Hours);
     let rows = &response.breakdowns.model_costs;
-    assert_eq!(rows.len(), 9, "eight named models plus one folded remainder");
+    assert_eq!(
+        rows.len(),
+        9,
+        "eight named models plus one folded remainder"
+    );
     assert_eq!(
         (rows[8].key.as_str(), rows[8].label.as_str()),
         ("other:", "Other models (2)")
@@ -1564,9 +1820,7 @@ fn turn_usage(
     input: i64,
     cumulative: i64,
 ) {
-    let counters = |value: i64| {
-        json!({"input_tokens":value,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":value})
-    };
+    let counters = |value: i64| json!({"input_tokens":value,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":value});
     record(
         store,
         thread,
@@ -1608,22 +1862,71 @@ fn turn_activity_counts_turns_per_model_and_reasoning_and_bins_them_once() {
 
     session(&mut store, "s1");
     turn_context(&mut store, "s1", "t1", "alpha", Some("high"));
-    turn_usage(&mut store, "s1", Some("t1"), "2026-01-02T12:00:00Z", 100, 100);
-    turn_usage(&mut store, "s1", Some("t1"), "2026-01-02T12:01:00Z", 100, 200);
+    turn_usage(
+        &mut store,
+        "s1",
+        Some("t1"),
+        "2026-01-02T12:00:00Z",
+        100,
+        100,
+    );
+    turn_usage(
+        &mut store,
+        "s1",
+        Some("t1"),
+        "2026-01-02T12:01:00Z",
+        100,
+        200,
+    );
     turn_context(&mut store, "s1", "t2", "alpha", Some("high"));
-    turn_usage(&mut store, "s1", Some("t2"), "2026-01-02T12:30:00Z", 100, 300);
+    turn_usage(
+        &mut store,
+        "s1",
+        Some("t2"),
+        "2026-01-02T12:30:00Z",
+        100,
+        300,
+    );
     turn_context(&mut store, "s1", "t3", "alpha", Some("low"));
-    turn_usage(&mut store, "s1", Some("t3"), "2026-01-02T13:00:00Z", 150, 450);
+    turn_usage(
+        &mut store,
+        "s1",
+        Some("t3"),
+        "2026-01-02T13:00:00Z",
+        150,
+        450,
+    );
 
     session(&mut store, "s2");
     turn_context(&mut store, "s2", "t4", "beta", Some("medium"));
-    turn_usage(&mut store, "s2", Some("t4"), "2026-01-02T14:05:00Z", 250, 250);
+    turn_usage(
+        &mut store,
+        "s2",
+        Some("t4"),
+        "2026-01-02T14:05:00Z",
+        250,
+        250,
+    );
     turn_context(&mut store, "s2", "t5", "beta", Some("medium"));
-    turn_usage(&mut store, "s2", Some("t5"), "2026-01-02T14:20:00Z", 250, 500);
+    turn_usage(
+        &mut store,
+        "s2",
+        Some("t5"),
+        "2026-01-02T14:20:00Z",
+        250,
+        500,
+    );
 
     session(&mut store, "s3");
     turn_context(&mut store, "s3", "t6", "beta", None);
-    turn_usage(&mut store, "s3", Some("t6"), "2026-01-02T15:00:00Z", 120, 120);
+    turn_usage(
+        &mut store,
+        "s3",
+        Some("t6"),
+        "2026-01-02T15:00:00Z",
+        120,
+        120,
+    );
 
     // No turn context and no turn identity: neither the model nor the reasoning
     // can be attributed, and the observation stands as its own turn.
@@ -1703,7 +2006,13 @@ fn turn_activity_counts_turns_per_model_and_reasoning_and_bins_them_once() {
             series_totals(series),
             (
                 series.turns,
-                series.tokens.known_tokens.as_deref().unwrap().parse().unwrap()
+                series
+                    .tokens
+                    .known_tokens
+                    .as_deref()
+                    .unwrap()
+                    .parse()
+                    .unwrap()
             ),
             "every bin adds up to the series total for {}",
             series.key
@@ -1731,12 +2040,26 @@ fn turn_activity_keeps_the_model_when_only_the_reasoning_context_conflicts() {
     session(&mut store, "s1");
     turn_context(&mut store, "s1", "t1", "alpha", Some("high"));
     turn_context(&mut store, "s1", "t1", "alpha", Some("low"));
-    turn_usage(&mut store, "s1", Some("t1"), "2026-01-02T12:00:00Z", 100, 100);
+    turn_usage(
+        &mut store,
+        "s1",
+        Some("t1"),
+        "2026-01-02T12:00:00Z",
+        100,
+        100,
+    );
     // A model conflict on a different turn still removes only that attribute.
     session(&mut store, "s2");
     turn_context(&mut store, "s2", "t2", "alpha", Some("high"));
     turn_context(&mut store, "s2", "t2", "beta", Some("high"));
-    turn_usage(&mut store, "s2", Some("t2"), "2026-01-02T12:00:00Z", 200, 200);
+    turn_usage(
+        &mut store,
+        "s2",
+        Some("t2"),
+        "2026-01-02T12:00:00Z",
+        200,
+        200,
+    );
 
     let response = read(&mut store, "2026-01-03T00:00:00Z", Range::Last24Hours);
     assert_eq!(
@@ -1744,7 +2067,11 @@ fn turn_activity_keeps_the_model_when_only_the_reasoning_context_conflicts() {
             .turn_activity
             .series
             .iter()
-            .map(|series| (series.model.as_deref(), series.effort.as_deref(), series.turns))
+            .map(|series| (
+                series.model.as_deref(),
+                series.effort.as_deref(),
+                series.turns
+            ))
             .collect::<Vec<_>>(),
         [(None, Some("high"), 1), (Some("alpha"), None, 1)],
         "a disagreement about one attribute never discards the other"
@@ -1762,7 +2089,13 @@ fn turn_activity_folds_the_remainder_into_one_series() {
         let mut cumulative = 0;
         for turn in 0..=index {
             let id = format!("t{index}-{turn}");
-            turn_context(&mut store, &thread, &id, "alpha", Some(&format!("e{index:02}")));
+            turn_context(
+                &mut store,
+                &thread,
+                &id,
+                "alpha",
+                Some(&format!("e{index:02}")),
+            );
             cumulative += 10;
             turn_usage(
                 &mut store,
@@ -1849,9 +2182,22 @@ fn folded_rows_report_no_session_count_rather_than_a_wrong_one() {
     for index in 0..10i64 {
         for turn in 0..=index {
             let id = format!("t{index}-{turn}");
-            turn_context(&mut store, "s0", &id, "alpha", Some(&format!("e{index:02}")));
+            turn_context(
+                &mut store,
+                "s0",
+                &id,
+                "alpha",
+                Some(&format!("e{index:02}")),
+            );
             cumulative += 10;
-            turn_usage(&mut store, "s0", Some(&id), "2026-01-02T12:00:00Z", 10, cumulative);
+            turn_usage(
+                &mut store,
+                "s0",
+                Some(&id),
+                "2026-01-02T12:00:00Z",
+                10,
+                cumulative,
+            );
         }
     }
     let activity = read(&mut store, "2026-01-03T00:00:00Z", Range::Last24Hours).turn_activity;

@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { BreakdownMetric, DashboardRange, DashboardResponse, EstimatedCost, ObservationTime, UnavailableReason } from "./dashboard-types";
+import type { BreakdownMetric, DashboardRange, DashboardResponse, EstimatedCost, ObservationTime, UnavailableReason, RangeSelection, TimeWindow } from "./dashboard-types";
 
-export const ranges: [DashboardRange, string][] = [["last24Hours", "24 hours"], ["last7Days", "7 days"], ["last30Days", "30 days"], ["all", "All"]];
+export const ranges: [Exclude<DashboardRange, "custom" | "trailing">, string][] = [["last24Hours", "24 hours"], ["last7Days", "7 days"], ["last30Days", "30 days"], ["all", "All"]];
 export const unavailable: Record<UnavailableReason, string> = {
   insufficientObservations: "Insufficient comparable observations", ambiguousObservation: "Ambiguous observation",
   belowOnePercentagePoint: "Less than 1 percentage point observed", unpricedUsage: "Unpriced usage — estimate unavailable",
@@ -37,7 +37,10 @@ export function localTime(time: ObservationTime): string { return new Date(time.
 
 /** One in-flight read, with at most one trailing refresh. Old ranges never publish. */
 export function useDashboard() {
-  const [range, setRange] = useState<DashboardRange>("last7Days");
+  const [period, setPeriod] = useState<RangeSelection>({ range: "last7Days" });
+  const [historyDepth, setHistoryDepth] = useState(0);
+  const history = useRef<RangeSelection[]>([]);
+  const baseline = useRef<RangeSelection>(period);
   const [breakdownMetric, setBreakdownMetric] = useState<BreakdownMetric>("tokens");
   const [data, setData] = useState<DashboardResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -45,16 +48,26 @@ export function useDashboard() {
   const [loading, setLoading] = useState(true);
   const [now, setNow] = useState(Date.now());
   const request = useRef<() => void>(() => {});
-  const selection = useRef(range);
+  const selection = useRef(period);
   const metricSelection = useRef(breakdownMetric);
   const generation = useRef(0);
-  const chooseRange = (next: DashboardRange) => {
+  const applyPeriod = (next: RangeSelection) => {
     generation.current++;
     selection.current = next;
-    setRange(next);
+    setPeriod(next);
     setData(null);
     request.current();
   };
+  const choosePeriod = (next: RangeSelection) => {
+    history.current = []; setHistoryDepth(0); baseline.current = next; applyPeriod(next);
+  };
+  const chooseRange = (range: Exclude<DashboardRange, "custom" | "trailing">) => choosePeriod({ range });
+  const selectWindow = (window: TimeWindow) => {
+    history.current.push(selection.current); setHistoryDepth(history.current.length);
+    applyPeriod({ range: "custom", ...window });
+  };
+  const goBack = () => { const previous = history.current.pop(); if (previous) { setHistoryDepth(history.current.length); applyPeriod(previous); } };
+  const resetZoom = () => { history.current = []; setHistoryDepth(0); applyPeriod(baseline.current); };
   const chooseBreakdownMetric = (next: BreakdownMetric) => {
     generation.current++;
     metricSelection.current = next;
@@ -74,10 +87,10 @@ export function useDashboard() {
       const requestedGeneration = generation.current;
       setLoading(true);
       try {
-        const result = await invoke<DashboardResponse>("usage_dashboard", { query: { range: requestedRange, breakdownMetric: requestedMetric } });
+        const result = await invoke<DashboardResponse>("usage_dashboard", { query: { ...requestedRange, breakdownMetric: requestedMetric } });
         if (!disposed && requestedGeneration === generation.current) { setData(result); setError(null); setNow(Date.now()); }
-      } catch {
-        if (!disposed && requestedGeneration === generation.current) setError("Dashboard could not be loaded. Retry to reconnect to local usage.");
+      } catch (error) {
+        if (!disposed && requestedGeneration === generation.current) setError(error === "invalidQuery" ? "Choose a valid period ending no later than now." : "Dashboard could not be loaded. Retry to reconnect to local usage.");
       } finally {
         running = false;
         if (!disposed) {
@@ -97,5 +110,5 @@ export function useDashboard() {
     const interval = setInterval(() => { setNow(Date.now()); void refresh(); }, 60_000);
     return () => { disposed = true; clearTimeout(timer); clearInterval(interval); stop?.(); };
   }, []);
-  return { range, chooseRange, breakdownMetric, chooseBreakdownMetric, data, error, connectionError, loading, now, retry: () => request.current() };
+  return { range: period.range, period, chooseRange, choosePeriod, selectWindow, goBack, resetZoom, historyDepth, breakdownMetric, chooseBreakdownMetric, data, error, connectionError, loading, now, retry: () => request.current() };
 }

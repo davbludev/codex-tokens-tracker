@@ -96,6 +96,10 @@ try {
         if (command === "plugin:event|listen") { state.listeners.add(args.handler); return args.handler; }
         if (command === "usage_snapshot") return { sourceAvailable: true, coverage: "Fixture local usage", diagnostic: null };
         if (command === "pricing_models") return { models: [], nextCursor: null };
+        if (command === "usage_calls") {
+          const zero = { tokens: { knownTokens: "0", complete: true }, estimatedCost: { knownSubtotal: "0", complete: true } };
+          return { start: args.query.start, end: args.query.end, items: [], totalItems: 0, summary: { estimatedCost: zero.estimatedCost, categories: { input: zero, cachedInput: zero, cacheWrites: zero, output: zero } }, nextCursor: null };
+        }
         if (command !== "usage_dashboard") return null;
         state.calls.push(args.query); state.active++; state.maxActive = Math.max(state.maxActive, state.active);
         const result = structuredClone(state.response); result.chart.range = args.query.range; result.breakdowns.metric = args.query.breakdownMetric;
@@ -291,7 +295,7 @@ try {
   await page.setViewportSize({ width: 1200, height: 800 });
   await page.locator(".weekly-details > summary").click();
   await page.getByText("42.000000001% / 57.999999999%", { exact: true }).waitFor();
-  await page.getByText("Since this device started watching · part of a cycle", { exact: true }).waitFor();
+  await page.getByText("Observations inside the selected interval", { exact: true }).waitFor();
   assert.match(await page.locator(".dashboard-unmatched").innerText(), /\$0.5/);
   const scales = await page.evaluate(() => {
     const plot = window.dashboardPlot;

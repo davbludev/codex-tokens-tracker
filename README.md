@@ -50,6 +50,12 @@ known subtotal. Model Pricing discovers all model IDs from logs and refreshes
 automatically as new models appear. The weekly-quota research panels sit in a
 collapsed **Advanced** block at the bottom of the page.
 
+Drag on a dashboard time chart to select an interval, use Ctrl + wheel to zoom
+and Shift + drag to pan. Custom dates and trailing durations share that interval
+across the dashboard. **Model calls** shows each invocation's category tokens,
+saved estimated price, and on-demand source-log activity. See
+[Call inspection](docs/call-inspection.md) for scope and log coverage details.
+
 The monitor discovers `sessions` and `archived_sessions` under `CODEX_HOME`,
 or the user's `.codex` directory. Native watches are registered before bounded
 historical discovery. Small read batches alternate with discovery and pending

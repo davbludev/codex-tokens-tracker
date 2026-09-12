@@ -326,7 +326,7 @@ pub(crate) fn scan(
     Ok(excluded)
 }
 
-fn cost(connection: &Connection, start: Time, end: Time) -> Result<Cost, ReadError> {
+pub(crate) fn cost(connection: &Connection, start: Time, end: Time) -> Result<Cost, ReadError> {
     connection.query_row("SELECT estimated_cost_sum(v.amount),COUNT(*),COUNT(v.observation_id) FROM observations o LEFT JOIN observation_valuations v ON v.observation_id=o.id WHERE o.accepted=1 AND (o.time_seconds,o.time_nanos)>(?1,?2) AND (o.time_seconds,o.time_nanos)<=(?3,?4)",
         params![start.seconds,start.nanos,end.seconds,end.nanos], |row| {
             let amount: Option<String> = row.get(0)?;

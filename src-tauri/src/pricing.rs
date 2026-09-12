@@ -116,6 +116,25 @@ impl PriceInput {
 }
 
 impl Rates {
+    /// Non-overlapping billed quantities, using the same validated policy as costs.
+    /// Output includes reasoning, including when that subset has a separate rate.
+    pub(crate) fn quantities(&self, tokens: &Tokens) -> Result<[i64; 4], Error> {
+        self.breakdown(tokens)?;
+        let [input, cached, writes, output, _, _] =
+            tokens.values().ok_or(Error::MissingCategories)?;
+        Ok([
+            input
+                - cached
+                - if self.cache_write_policy == CacheWritePolicy::IncludedInputDisjoint {
+                    writes
+                } else {
+                    0
+                },
+            cached,
+            writes,
+            output,
+        ])
+    }
     /// Research component prices: reasoning uses output's price unless a separate
     /// reasoning price was configured. This does not change normal valuation policy.
     pub(crate) fn hypothesis_value(&self, components: [i64; 5]) -> Result<i128, Error> {

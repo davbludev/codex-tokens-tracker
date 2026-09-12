@@ -1,11 +1,11 @@
 //! Bounded local activity and ranked composition, independent of quota availability.
 use crate::{
     aggregates::{Category, EstimatedCost},
-    dashboard::{self as dto, BreakdownMetric, Range},
+    dashboard::{self as dto, BreakdownMetric},
     storage::aggregates::{row_tokens, token_fields, PROJECTS},
     weekly::{ReadError, Time},
 };
-use rusqlite::{functions::FunctionFlags, params, OptionalExtension, Row, Transaction};
+use rusqlite::{functions::FunctionFlags, params, Row, Transaction};
 
 const INTERVAL: &str = "o.accepted=1 AND o.time_seconds IS NOT NULL AND o.time_nanos IS NOT NULL AND (o.time_seconds,o.time_nanos)>(?1,?2) AND (o.time_seconds,o.time_nanos)<=(?3,?4)";
 
@@ -22,19 +22,10 @@ fn time(value: i128) -> Time {
 pub(super) fn read(
     tx: &Transaction<'_>,
     query: &dto::Query,
-    cycle: Option<Time>,
+    start: Time,
     now: Time,
     bins: u32,
 ) -> Result<(dto::LocalUsage, dto::Breakdowns, dto::TurnActivity), ReadError> {
-    let start = match query.range {
-        Range::All => tx.query_row(
-            "SELECT time_seconds,time_nanos FROM observations WHERE accepted=1 AND time_seconds IS NOT NULL AND time_nanos IS NOT NULL AND (time_seconds,time_nanos)<=(?1,?2) ORDER BY time_seconds,time_nanos LIMIT 1",
-            params![now.seconds, now.nanos],
-            |row| Ok(Time { seconds: row.get(0)?, nanos: row.get(1)? }),
-        ).optional().map_err(|_| ReadError::Storage)?.map(|first| time(nanos(first) - 1)).unwrap_or(now),
-        Range::CurrentCycle if cycle.is_none() => Time { seconds: now.seconds.saturating_sub(7 * 86400), nanos: now.nanos },
-        _ => query.start(now, cycle, None),
-    };
     let width = (nanos(now) - nanos(start)).max(1);
     tx.create_scalar_function(
         "dashboard_usage_bin",

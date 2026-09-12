@@ -4,6 +4,7 @@ use crate::{
     identity, identity_filesystem,
 };
 pub(crate) mod aggregates;
+pub(crate) mod calls;
 mod dashboard;
 mod hierarchy;
 pub(crate) mod pricing;
@@ -188,7 +189,9 @@ impl Store {
         }
         if version < 13 {
             let tx = connection.transaction()?;
-            tx.execute_batch(include_str!("../migrations/013_unreadable_record_is_a_gap.sql"))?;
+            tx.execute_batch(include_str!(
+                "../migrations/013_unreadable_record_is_a_gap.sql"
+            ))?;
             tx.commit()?;
         }
         if version < 14 {

@@ -16,6 +16,8 @@ pub enum Range {
     Last7Days,
     Last30Days,
     All,
+    Custom,
+    Trailing,
 }
 
 #[derive(Debug, Deserialize)]
@@ -25,9 +27,30 @@ pub struct Query {
     pub point_budget: Option<u32>,
     #[serde(default)]
     pub breakdown_metric: BreakdownMetric,
+    pub start: Option<Time>,
+    pub end: Option<Time>,
+    pub duration_seconds: Option<u64>,
 }
 impl Query {
     pub fn validate(&self) -> Result<usize, weekly::ReadError> {
+        let valid_time = |time: Time| time.nanos < 1_000_000_000;
+        let valid = match self.range {
+            Range::Custom => {
+                matches!((self.start, self.end), (Some(start), Some(end)) if valid_time(start) && valid_time(end) && start < end)
+                    && self.duration_seconds.is_none()
+            }
+            Range::Trailing => {
+                self.start.is_none()
+                    && self.end.is_none()
+                    && self
+                        .duration_seconds
+                        .is_some_and(|seconds| seconds > 0 && seconds <= i64::MAX as u64)
+            }
+            _ => self.start.is_none() && self.end.is_none() && self.duration_seconds.is_none(),
+        };
+        if !valid {
+            return Err(weekly::ReadError::InvalidQuery);
+        }
         let budget = self.point_budget.unwrap_or(MAX_POINTS);
         if !(8..=MAX_POINTS).contains(&budget) {
             return Err(weekly::ReadError::InvalidQuery);
@@ -37,7 +60,14 @@ impl Query {
     pub fn start(&self, now: Time, cycle: Option<Time>, earliest: Option<Time>) -> Time {
         let seconds = match self.range {
             Range::CurrentCycle => return cycle.unwrap_or(now),
-            Range::All => return earliest.unwrap_or(now),
+            Range::All => {
+                return earliest.unwrap_or(Time {
+                    seconds: now.seconds.saturating_sub(7 * 86400),
+                    nanos: now.nanos,
+                })
+            }
+            Range::Custom => return self.start.unwrap_or(now),
+            Range::Trailing => self.duration_seconds.unwrap_or(0).min(i64::MAX as u64) as i64,
             Range::Last24Hours => 86400,
             Range::Last7Days => 7 * 86400,
             Range::Last30Days => 30 * 86400,
@@ -46,6 +76,14 @@ impl Query {
             seconds: now.seconds.saturating_sub(seconds),
             nanos: now.nanos,
         }
+    }
+
+    pub fn end(&self, now: Time) -> Result<Time, weekly::ReadError> {
+        let end = self.end.unwrap_or(now);
+        if end > now {
+            return Err(weekly::ReadError::InvalidQuery);
+        }
+        Ok(end)
     }
 }
 
@@ -61,6 +99,19 @@ pub struct Response {
     pub breakdowns: Breakdowns,
     pub turn_activity: TurnActivity,
     pub quota_analysis: QuotaAnalysis,
+    pub range_quota: RangeQuota,
+    pub available_start: Option<Time>,
+    pub available_end: Option<Time>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RangeQuota {
+    pub latest: Option<weekly::Observation>,
+    pub segments: Vec<Estimate>,
+    pub total_segments: u64,
+    pub recent: Estimate,
+    pub unmatched_cost: Option<Cost>,
 }
 
 #[derive(Debug, Serialize)]

@@ -22,6 +22,50 @@ use tauri::{Emitter, Manager};
 pub struct State(pub Mutex<Snapshot>);
 
 #[tauri::command]
+pub async fn usage_call_activity(
+    app: tauri::AppHandle,
+    runtime: tauri::State<'_, Arc<crate::activity::Runtime>>,
+    query: crate::activity::Query,
+) -> Result<crate::activity::Page, crate::weekly::ReadError> {
+    let path = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| crate::weekly::ReadError::Storage)?
+        .join("usage.sqlite");
+    let runtime = runtime.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || runtime.activity(&path, query))
+        .await
+        .map_err(|_| crate::weekly::ReadError::Storage)?
+}
+
+#[tauri::command]
+pub async fn usage_activity_text(
+    runtime: tauri::State<'_, Arc<crate::activity::Runtime>>,
+    query: crate::activity::TextQuery,
+) -> Result<crate::activity::TextPage, String> {
+    let runtime = runtime.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || runtime.text(query))
+        .await
+        .map_err(|_| "Activity worker unavailable".to_owned())?
+}
+
+#[tauri::command]
+pub async fn usage_calls(
+    app: tauri::AppHandle,
+    query: crate::calls::Query,
+) -> Result<crate::calls::Page, crate::weekly::ReadError> {
+    query.validate()?;
+    let path = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| crate::weekly::ReadError::Storage)?
+        .join("usage.sqlite");
+    tauri::async_runtime::spawn_blocking(move || Store::read_calls(&path, query))
+        .await
+        .map_err(|_| crate::weekly::ReadError::Storage)?
+}
+
+#[tauri::command]
 pub fn usage_snapshot(state: tauri::State<'_, State>) -> std::result::Result<Snapshot, String> {
     state
         .0

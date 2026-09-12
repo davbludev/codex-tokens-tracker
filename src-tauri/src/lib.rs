@@ -1,6 +1,8 @@
 mod accounting;
+mod activity;
 mod adapter;
 mod aggregates;
+mod calls;
 mod commands;
 mod dashboard;
 mod desktop;
@@ -20,6 +22,7 @@ pub fn run() {
     let (pricing_control, pricing_inbox) = commands::pricing::channel();
     tauri::Builder::default()
         .manage(pricing_control)
+        .manage(std::sync::Arc::new(activity::Runtime::default()))
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .manage(commands::monitoring::Runtime::default())
         .manage(desktop::Runtime::default())
@@ -35,6 +38,9 @@ pub fn run() {
             commands::usage_weekly,
             commands::usage_weekly_models,
             commands::usage_dashboard,
+            commands::usage_calls,
+            commands::usage_call_activity,
+            commands::usage_activity_text,
             commands::pricing::pricing_models,
             commands::pricing::save_model_price,
             commands::pricing::backfill_model_price,

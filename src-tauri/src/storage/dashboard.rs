@@ -4,7 +4,7 @@ use crate::{
     dashboard::{self as dto, Downsample, Projection},
     weekly::{Cost, ReadError, Time, Timeline},
 };
-use rusqlite::{params, Connection, Rows};
+use rusqlite::{params, Connection, OptionalExtension, Rows};
 use std::{
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
@@ -12,6 +12,7 @@ use std::{
 mod categories;
 mod models;
 mod quota;
+mod range_quota;
 mod turns;
 mod usage;
 
@@ -42,49 +43,60 @@ impl Store {
         now: Time,
     ) -> Result<dto::Response, ReadError> {
         let bins = query.validate()?;
+        let end = query.end(now)?;
         weekly::register(&self.connection)?;
         let tx = self
             .connection
             .transaction()
             .map_err(|_| ReadError::Storage)?;
-        let (weekly, earliest) = weekly::project_with_start(
+        let weekly = weekly::project(
             &tx,
             crate::weekly::Query {
                 before: None,
                 limit: 1,
             },
-            now,
+            end,
         )?;
         let global = aggregates::global_summary(&tx).map_err(|_| ReadError::Storage)?;
-        let start = query.start(
-            now,
-            weekly
-                .current_cycle
-                .as_ref()
-                .map(|cycle| cycle.first_observation.time),
-            earliest,
-        );
-        let (local_usage, breakdowns, turn_activity) = usage::read(
-            &tx,
-            &query,
-            weekly
-                .current_cycle
-                .as_ref()
-                .map(|cycle| cycle.first_observation.time),
-            now,
-            bins as u32,
-        )?;
-        let mut downsample = Downsample::new(query.range, start, now, bins);
+        let (available_start, available_end) = history_bounds(&tx, now)?;
+        let first_inclusive = available_start.filter(|first| *first <= end).map(|first| {
+            if first.nanos > 0 {
+                Time {
+                    nanos: first.nanos - 1,
+                    ..first
+                }
+            } else {
+                Time {
+                    seconds: first.seconds.saturating_sub(1),
+                    nanos: 999_999_999,
+                }
+            }
+        });
+        let cycle_start = weekly
+            .current_cycle
+            .as_ref()
+            .map(|cycle| cycle.first_observation.time);
+        let start = match query.range {
+            dto::Range::CurrentCycle if cycle_start.is_none() => Time {
+                seconds: end.seconds.saturating_sub(7 * 86400),
+                nanos: end.nanos,
+            },
+            _ => query.start(end, cycle_start, first_inclusive),
+        };
+        let (local_usage, breakdowns, turn_activity) =
+            usage::read(&tx, &query, start, end, bins as u32)?;
+        let mut selected_quota = range_quota::SelectedQuota::new(start, end);
+        let mut downsample = Downsample::new(query.range, start, end, bins);
         let mut projection = Projection::default();
-        let mut timeline = Timeline::new(now, None, 1);
+        let mut timeline = Timeline::new(end, None, 1);
         // One SQL grouping/sort and one chronological merge, never a prefix cost
         // query per quota observation. Immutable valuations use the existing exact sum.
         let mut statement = tx.prepare(COST_GROUPS).map_err(|_| ReadError::Storage)?;
         let mut rows = statement
-            .query(params![now.seconds, now.nanos])
+            .query(params![end.seconds, end.nanos])
             .map_err(|_| ReadError::Storage)?;
         let mut next = next_cost(&mut rows)?;
-        weekly::scan(&tx, now, &mut timeline, |timeline, time| {
+        weekly::scan(&tx, end, &mut timeline, |timeline, time| {
             let mut amount = 0i128;
             let mut known = false;
             let mut accepted = 0u64;
@@ -111,15 +123,55 @@ impl Store {
                 complete,
                 accepted_observations: accepted,
             };
-            let (point, boundary) = projection.push(timeline, time, interval)?;
+            let (point, boundary) = projection.push(timeline, time, interval.clone())?;
+            selected_quota.push(timeline.latest.as_ref(), time, boundary, &interval)?;
             downsample.push(point, boundary);
             Ok(())
         })?;
-        let quota_analysis = quota::read(&tx, start, now)?;
+        let quota_analysis = quota::read(&tx, start, end)?;
+        let unmatched = selected_quota
+            .last_time()
+            .map(|last| weekly::cost(&tx, last, end))
+            .transpose()?;
+        let range_quota = selected_quota.finish(unmatched);
         Ok(dto::Response { evaluated_at: now, weekly, global,
             token_scope: "All locally observed history; direct session usage counted once. Cached input and reasoning overlap other categories; do not add categories.",
-            chart: downsample.finish(), local_usage, breakdowns, turn_activity, quota_analysis })
+            chart: downsample.finish(), local_usage, breakdowns, turn_activity, quota_analysis, range_quota, available_start, available_end })
     }
+}
+
+// Coverage describes retained observations, independently of the viewing window.
+fn history_bounds(
+    connection: &Connection,
+    now: Time,
+) -> Result<(Option<Time>, Option<Time>), ReadError> {
+    let mut first = None;
+    let mut last = None;
+    weekly::scan(
+        connection,
+        now,
+        &mut Timeline::new(now, None, 1),
+        |_, time| {
+            first.get_or_insert(time);
+            last = Some(time);
+            Ok(())
+        },
+    )?;
+    for order in ["ASC", "DESC"] {
+        let sql = format!("SELECT time_seconds,time_nanos FROM observations WHERE accepted=1 AND time_seconds IS NOT NULL AND time_nanos IS NOT NULL AND (time_seconds,time_nanos)<=(?1,?2) ORDER BY time_seconds {order},time_nanos {order} LIMIT 1");
+        let time = connection
+            .query_row(&sql, params![now.seconds, now.nanos], |row| {
+                Ok(Time {
+                    seconds: row.get(0)?,
+                    nanos: row.get(1)?,
+                })
+            })
+            .optional()
+            .map_err(|_| ReadError::Storage)?;
+        first = first.into_iter().chain(time).min();
+        last = last.into_iter().chain(time).max();
+    }
+    Ok((first, last))
 }
 
 const COST_GROUPS: &str = "SELECT o.time_seconds,o.time_nanos,estimated_cost_sum(v.amount),COUNT(*),COUNT(v.observation_id) FROM observations o LEFT JOIN observation_valuations v ON v.observation_id=o.id WHERE o.accepted=1 AND o.time_seconds IS NOT NULL AND o.time_nanos IS NOT NULL AND (o.time_seconds,o.time_nanos)<=(?1,?2) GROUP BY o.time_seconds,o.time_nanos ORDER BY o.time_seconds,o.time_nanos";

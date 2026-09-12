@@ -133,7 +133,7 @@ impl Discovery {
         result
     }
 }
-fn shared_open(path: &Path) -> std::io::Result<File> {
+pub(crate) fn shared_open(path: &Path) -> std::io::Result<File> {
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(windows)]
@@ -144,7 +144,7 @@ fn shared_open(path: &Path) -> std::io::Result<File> {
     options.open(path)
 }
 
-fn file_identity(file: &File) -> std::io::Result<String> {
+pub(crate) fn file_identity(file: &File) -> std::io::Result<String> {
     #[cfg(windows)]
     {
         use std::os::windows::io::AsRawHandle;

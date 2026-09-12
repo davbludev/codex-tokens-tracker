@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
-import type { ChartPoint, DashboardChart as ChartData } from "./dashboard-types";
+import type { ChartPoint, DashboardChart as ChartData, TimeWindow } from "./dashboard-types";
+import { attachTimeNavigation } from "./time-navigation";
 import { costText, exactTime, unavailable, usd } from "./dashboard-data";
 
 const colors = ["#80b7ff", "#65d8ad", "#edbe74"];
-export function DashboardChart({ chart }: { chart: ChartData }) {
+export function DashboardChart({ chart, selectWindow }: { chart: ChartData; selectWindow?: (window: TimeWindow) => void }) {
+  const selection = useRef(selectWindow); selection.current = selectWindow;
   const host = useRef<HTMLDivElement>(null);
   const [selected, setSelected] = useState(0);
   const [hovered, setHovered] = useState<number | null>(null);
@@ -57,9 +59,10 @@ export function DashboardChart({ chart }: { chart: ChartData }) {
         }],
       },
     }, data, host.current);
+    const detach = attachTimeNavigation(plot, window => selection.current?.(window));
     const resize = new ResizeObserver(() => { if (host.current) plot.setSize({ width: Math.max(280, host.current.clientWidth), height: 290 }); });
     resize.observe(host.current);
-    return () => { resize.disconnect(); plot.destroy(); };
+    return () => { detach(); resize.disconnect(); plot.destroy(); };
   }, [chart]);
   const point = chart.points[Math.min(selected, chart.points.length - 1)];
   return <div className="dashboard-chart">

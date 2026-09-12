@@ -1,8 +1,10 @@
 /** Native decimal strings remain exact; convert only coordinates used for drawing. */
 export type ObservationTime = { seconds: number; nanos: number };
-export type DashboardRange = "currentCycle" | "last24Hours" | "last7Days" | "last30Days" | "all";
+export type DashboardRange = "currentCycle" | "last24Hours" | "last7Days" | "last30Days" | "all" | "custom" | "trailing";
 export type BreakdownMetric = "tokens" | "cost";
-export type DashboardQuery = { range: DashboardRange; pointBudget?: number; breakdownMetric?: BreakdownMetric };
+export type TimeWindow = { start: ObservationTime; end: ObservationTime };
+export type RangeSelection = { range: Exclude<DashboardRange, "custom" | "trailing"> } | ({ range: "custom" } & TimeWindow) | { range: "trailing"; durationSeconds: number };
+export type DashboardQuery = RangeSelection & { pointBudget?: number; breakdownMetric?: BreakdownMetric };
 export type DashboardReadError = "invalidQuery" | "storage";
 export type UnavailableReason = "insufficientObservations" | "ambiguousObservation" | "belowOnePercentagePoint" | "unpricedUsage";
 export type EstimatedCost = {
@@ -105,6 +107,9 @@ export type DashboardChart = {
   coverageNote: string;
 };
 export type DashboardResponse = {
+  availableStart: ObservationTime | null;
+  availableEnd: ObservationTime | null;
+  rangeQuota: { latest: WeeklyObservation | null; segments: WeeklyEstimate[]; totalSegments: number; recent: WeeklyEstimate; unmatchedCost: EstimatedCost | null };
   evaluatedAt: ObservationTime;
   weekly: WeeklySummary;
   global: GlobalSummary;
