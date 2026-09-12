@@ -8,6 +8,7 @@ import { QuotaAnalysis } from "./QuotaAnalysis";
 import { QuotaCategoryCosts } from "./QuotaCategoryCosts";
 import { CallTimeline, type CallFilters } from "./CallTimeline";
 import { PeriodControls } from "./PeriodControls";
+import { PreserveReadingPosition } from "./PreserveReadingPosition";
 import { compactCost, compactTokens, costText, exactTime, exactTokens, localTime, ranges, unavailable, usd, useDashboard } from "./dashboard-data";
 import type { TokenCategory, WeeklyEstimate, DashboardResponse, WeeklySummary } from "./dashboard-types";
 import "./dashboard.css";
@@ -16,7 +17,7 @@ export function Dashboard({ onOpenPricing }: { onOpenPricing?: () => void }) {
   const root = useRef<HTMLDivElement>(null);
   const retainedHeight = useRef(0);
   const [callFilters, setCallFilters] = useState<CallFilters>({ model: null, thread: null });
-  const { data, range, chooseRange, choosePeriod, selectWindow, goBack, resetZoom, historyDepth, breakdownMetric, chooseBreakdownMetric, error, connectionError, loading, now, retry } = useDashboard();
+  const { data, range, period, chooseRange, choosePeriod, selectWindow, goBack, resetZoom, historyDepth, breakdownMetric, chooseBreakdownMetric, error, connectionError, loading, now, retry } = useDashboard();
   const weekly = data ? selectedWeekly(data) : undefined;
   const cycle = weekly?.currentCycle;
   const observation = cycle?.lastObservation;
@@ -32,7 +33,7 @@ export function Dashboard({ onOpenPricing }: { onOpenPricing?: () => void }) {
     measure(); const observer = new ResizeObserver(measure); observer.observe(element);
     return () => observer.disconnect();
   }, [data, loading]);
-  return <div className="dashboard" ref={root} style={!data && retainedHeight.current ? { minHeight: retainedHeight.current } : undefined} aria-label="Usage dashboard">
+  return <PreserveReadingPosition scope={JSON.stringify(period)}><div className="dashboard" ref={root} style={!data && retainedHeight.current ? { minHeight: retainedHeight.current } : undefined} aria-label="Usage dashboard">
     <div className="dashboard-toolbar">
       <div className="dashboard-scope"><span className="eyebrow">LOCAL USAGE</span><span>{local ? local.summary.observedSessions.toLocaleString() + " sessions in range" : "Your recorded session activity"}</span></div>
       <div className="dashboard-ranges" role="group" aria-label="Chart range">{ranges.map(([value, label]) => <button key={value} type="button" aria-pressed={range === value} onClick={() => chooseRange(value)}>{label}</button>)}</div>
@@ -83,7 +84,7 @@ export function Dashboard({ onOpenPricing }: { onOpenPricing?: () => void }) {
       </details>}
       <p className="dashboard-disclaimer">Estimated costs reflect locally recorded usage and your configured prices. They are not an OpenAI charge or complete account usage.</p>
     </> : loading ? <div className="dashboard-loading" aria-label="Loading dashboard"><div /><div /><div /><div /><div /><div /></div> : !error && <div className="chart-empty" role="status"><strong>No dashboard data available</strong><p>Check your session source in Settings.</p></div>}
-  </div>;
+  </div></PreserveReadingPosition>;
 }
 function selectedWeekly(data: DashboardResponse): WeeklySummary {
   const quota = data.rangeQuota;

@@ -23,7 +23,10 @@ are exact IDs; omitted filters mean all. Limits are 1–50 and default to 50.
 Calls are accepted observations ordered by exact timestamp and durable ID; one
 turn can contain many calls. The exclusive cursor is bound to the interval and
 filters. Every page includes totals over the whole filtered selection, not just
-its rows. Refreshes reset paging. Each query uses a consistent read transaction;
+its rows. Background refreshes replace the loaded pages together, preserving
+expanded calls, read text, and the reading position. A moving period keeps calls
+that remain inside it; explicit period or filter changes reset paging.
+Each query uses a consistent read transaction;
 different requests are live snapshots and can observe new data.
 
 Time membership is `start < usage timestamp <= end`. Source counters include
