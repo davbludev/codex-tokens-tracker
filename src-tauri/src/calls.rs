@@ -4,6 +4,37 @@ use crate::{
     weekly::{ReadError, Time},
 };
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum Sort {
+    #[default]
+    Time,
+    CostDesc,
+    CostAsc,
+}
+impl Sort {
+    pub(crate) fn compare_cost(self, a: Option<&str>, b: Option<&str>) -> Ordering {
+        if self == Self::Time {
+            return Ordering::Equal;
+        }
+        match (a, b) {
+            // Canonical nonnegative decimal integers: preserve exact USD precision.
+            (Some(a), Some(b)) => {
+                let order = a.len().cmp(&b.len()).then_with(|| a.cmp(b));
+                if self == Self::CostDesc {
+                    order.reverse()
+                } else {
+                    order
+                }
+            }
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => Ordering::Equal,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -34,6 +65,8 @@ pub struct Query {
     pub end: Time,
     pub model: Option<String>,
     pub thread: Option<String>,
+    #[serde(default)]
+    pub sort: Sort,
     pub after: Option<String>,
     pub limit: Option<u32>,
 }
@@ -113,6 +146,9 @@ pub(crate) struct Cursor {
     pub window: Window,
     pub model: Option<String>,
     pub thread: Option<String>,
+    #[serde(default)]
+    pub sort: Sort,
+    pub cost: Option<String>,
     pub time: Time,
     pub id: i64,
 }

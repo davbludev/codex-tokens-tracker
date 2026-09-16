@@ -112,7 +112,9 @@ pub(super) fn read(
     // remainder folds without needing a second ranking rule in SQL.
     let sql = format!("SELECT {key} AS model_id,COUNT(*),{},COUNT(v.observation_id),COUNT(DISTINCT o.thread_id) FROM observations o LEFT JOIN observation_valuations v ON v.observation_id=o.id WHERE {interval} GROUP BY model_id", token_fields());
     let mut statement = tx.prepare(&sql).map_err(|_| ReadError::Storage)?;
-    let mut grouped = statement.query(parameters).map_err(|_| ReadError::Storage)?;
+    let mut grouped = statement
+        .query(parameters)
+        .map_err(|_| ReadError::Storage)?;
     while let Some(row) = grouped.next().map_err(|_| ReadError::Storage)? {
         let read = || -> rusqlite::Result<(String, Row)> {
             let mut entry = Row {
@@ -135,7 +137,9 @@ pub(super) fn read(
     // very price version its stored valuation used.
     let sql = format!("SELECT {key} AS model_id,o.normalized,v.amount,p.configuration FROM observations o JOIN observation_valuations v ON v.observation_id=o.id JOIN model_price_versions p ON p.id=v.version_id WHERE {interval}");
     let mut statement = tx.prepare(&sql).map_err(|_| ReadError::Storage)?;
-    let mut valued = statement.query(parameters).map_err(|_| ReadError::Storage)?;
+    let mut valued = statement
+        .query(parameters)
+        .map_err(|_| ReadError::Storage)?;
     while let Some(row) = valued.next().map_err(|_| ReadError::Storage)? {
         let id: String = row.get(0).map_err(|_| ReadError::Storage)?;
         let encoded: String = row.get(1).map_err(|_| ReadError::Storage)?;

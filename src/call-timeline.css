@@ -5,7 +5,7 @@
 .period-controls > details { margin-top: 8px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 7px; }
 .period-fields, .period-trailing, .call-filters { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; }
 .period-fields label, .period-trailing label, .call-filters label { display: grid; gap: 5px; color: var(--muted); font-size: 11px; }
-.period-fields input, .period-trailing input, .period-trailing select, .call-filters input { min-height: 32px; background: #10161e; color: var(--text); border: 1px solid var(--border); border-radius: 5px; padding: 5px 8px; font: inherit; color-scheme: dark; }
+.period-fields input, .period-trailing input, .period-trailing select, .call-filters input, .call-filters select { min-height: 32px; background: #10161e; color: var(--text); border: 1px solid var(--border); border-radius: 5px; padding: 5px 8px; font: inherit; color-scheme: dark; }
 .period-fields input[aria-invalid="true"] { border-color: #eb9c82; }
 .period-trailing { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
 .period-trailing input { width: 90px; }

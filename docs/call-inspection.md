@@ -18,11 +18,14 @@ unmatched edge cost. Historical chart projections keep their original baselines.
 An interval estimate uses actual quota endpoints inside the selection; it never
 divides all selected usage by a denominator covering only part of the selection.
 
-`usage_calls` accepts `{start,end,model?,thread?,after?,limit?}`. Model and thread
+`usage_calls` accepts `{start,end,model?,thread?,sort?,after?,limit?}`. Model and thread
 are exact IDs; omitted filters mean all. Limits are 1–50 and default to 50.
-Calls are accepted observations ordered by exact timestamp and durable ID; one
-turn can contain many calls. The exclusive cursor is bound to the interval and
-filters. Every page includes totals over the whole filtered selection, not just
+Calls are accepted observations; one turn can contain many calls. Sort defaults
+to `time` (oldest first); `costDesc` and `costAsc` order the entire filtered
+selection by exact preserved call cost, with unknown prices last in both modes.
+Equal prices use exact timestamp and durable ID. Changing sort resets paging.
+The exclusive cursor is bound to the interval, filters and sort order.
+Every page includes totals over the whole filtered selection, not just
 its rows. Background refreshes replace the loaded pages together, preserving
 expanded calls, read text, and the reading position. A moving period keeps calls
 that remain inside it; explicit period or filter changes reset paging.

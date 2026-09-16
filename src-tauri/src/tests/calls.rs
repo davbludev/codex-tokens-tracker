@@ -33,6 +33,7 @@ fn query(start: i64, end: i64) -> calls::Query {
         end: window.end,
         model: None,
         thread: None,
+        sort: calls::Sort::Time,
         after: None,
         limit: None,
     }
@@ -100,6 +101,92 @@ fn all_activity(
         query.cursor = page.next_cursor;
     }
     panic!("Activity cursor did not advance");
+}
+
+#[test]
+fn calls_sort_exact_prices_with_unknowns_last_and_stable_paging() {
+    let temp = tempfile::tempdir().unwrap();
+    let rates = [
+        Some("10"),
+        Some("9"),
+        Some("0"),
+        Some("100000000000"),
+        Some("100000000000.000001"),
+        Some("10"),
+        None,
+        None,
+    ];
+    let lines: Vec<_> = (1..=8)
+        .flat_map(|n| {
+            let mut call = usage(n, 1);
+            call["payload"]["turn_id"] = format!("turn-{n}").into();
+            [
+                event(
+                    1,
+                    "turn_context",
+                    json!({"turn_id":format!("turn-{n}"),"model":format!("model-{n}")}),
+                ),
+                call,
+            ]
+        })
+        .collect();
+    let (mut store, _, _) = setup(temp.path(), &lines);
+    for (index, rate) in rates.iter().enumerate() {
+        if let Some(rate) = rate {
+            let mut input = price(rate);
+            input.cached_input = "0".into();
+            input.output = "0".into();
+            store
+                .save_model_price_at(&format!("model-{}", index + 1), input, true, (0, 0))
+                .unwrap();
+        }
+    }
+    while store.pricing_work_pending().unwrap() {
+        store.process_pricing_work().unwrap();
+    }
+    let baseline = store.calls(query(0, 2)).unwrap();
+    assert_eq!(baseline.total_items, 8);
+    for (sort, expected) in [
+        (calls::Sort::CostAsc, vec![3, 2, 1, 6, 4, 5, 7, 8]),
+        (calls::Sort::CostDesc, vec![5, 4, 1, 6, 2, 3, 7, 8]),
+    ] {
+        let mut after = None;
+        let mut responses = Vec::new();
+        for index in 0..8 {
+            let mut request = query(0, 2);
+            request.sort = sort;
+            request.thread = Some("task".into());
+            request.limit = Some(1);
+            request.after = after;
+            let page = store.calls(request).unwrap();
+            assert_eq!(page.total_items, 8);
+            assert_eq!(
+                page.summary.estimated_cost.known_subtotal,
+                baseline.summary.estimated_cost.known_subtotal
+            );
+            assert!(!page.summary.estimated_cost.complete);
+            assert_eq!(page.items.len(), 1);
+            responses.push(page.items[0].response_id.clone().unwrap());
+            after = page.next_cursor;
+            assert_eq!(after.is_some(), index < 7);
+            if index == 0 {
+                let mut wrong_sort = query(0, 2);
+                wrong_sort.thread = Some("task".into());
+                wrong_sort.after = after.clone();
+                assert!(
+                    store.calls(wrong_sort).is_err(),
+                    "A cursor cannot be reused with a different sort"
+                );
+            }
+        }
+        assert_eq!(
+            responses,
+            expected
+                .iter()
+                .map(|n| format!("response-{n}"))
+                .collect::<Vec<_>>()
+        );
+    }
 }
 
 #[test]

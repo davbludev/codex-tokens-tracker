@@ -41,6 +41,11 @@ impl Store {
             cursor.window != query.window()
                 || cursor.model != query.model
                 || cursor.thread != query.thread
+                || cursor.sort != query.sort
+                || cursor.cost.as_deref().is_some_and(|cost| {
+                    cost.parse::<i128>()
+                        .map_or(true, |value| value < 0 || value.to_string() != cost)
+                })
                 || !query.window().contains(cursor.time)
                 || cursor.id <= 0
         }) {
@@ -51,7 +56,12 @@ impl Store {
             .connection
             .transaction()
             .map_err(|_| ReadError::Storage)?;
-        let mut statement = tx.prepare("SELECT o.id,o.time_seconds,o.time_nanos,o.thread_id,o.response_id,o.model,o.effort,o.normalized,v.amount,v.version_id,p.configuration FROM observations o LEFT JOIN observation_valuations v ON v.observation_id=o.id LEFT JOIN model_price_versions p ON p.id=v.version_id WHERE o.accepted=1 AND (o.time_seconds,o.time_nanos)>(?1,?2) AND (o.time_seconds,o.time_nanos)<=(?3,?4) AND (?5 IS NULL OR o.model=?5) AND (?6 IS NULL OR o.thread_id=?6) ORDER BY o.time_seconds,o.time_nanos,o.id").map_err(|_| ReadError::Storage)?;
+        let order = match query.sort {
+            calls::Sort::Time => "o.time_seconds,o.time_nanos,o.id",
+            calls::Sort::CostDesc => "length(v.amount) DESC NULLS LAST,v.amount DESC NULLS LAST,o.time_seconds,o.time_nanos,o.id",
+            calls::Sort::CostAsc => "length(v.amount) ASC NULLS LAST,v.amount ASC NULLS LAST,o.time_seconds,o.time_nanos,o.id",
+        };
+        let mut statement = tx.prepare(&format!("SELECT o.id,o.time_seconds,o.time_nanos,o.thread_id,o.response_id,o.model,o.effort,o.normalized,v.amount,v.version_id,p.configuration FROM observations o LEFT JOIN observation_valuations v ON v.observation_id=o.id LEFT JOIN model_price_versions p ON p.id=v.version_id WHERE o.accepted=1 AND (o.time_seconds,o.time_nanos)>(?1,?2) AND (o.time_seconds,o.time_nanos)<=(?3,?4) AND (?5 IS NULL OR o.model=?5) AND (?6 IS NULL OR o.thread_id=?6) ORDER BY {order}")).map_err(|_| ReadError::Storage)?;
         let mut rows = statement
             .query(params![
                 query.start.seconds,
@@ -72,10 +82,16 @@ impl Store {
             total_items += 1;
             totals.add(&call)?;
             let id = call.id.parse::<i64>().map_err(|_| ReadError::Storage)?;
-            if cursor
-                .as_ref()
-                .is_some_and(|cursor| (call.time, id) <= (cursor.time, cursor.id))
-            {
+            if cursor.as_ref().is_some_and(|cursor| {
+                query
+                    .sort
+                    .compare_cost(
+                        call.estimated_cost.known_subtotal.as_deref(),
+                        cursor.cost.as_deref(),
+                    )
+                    .then_with(|| (call.time, id).cmp(&(cursor.time, cursor.id)))
+                    .is_le()
+            }) {
                 continue;
             }
             if items.len() < limit {
@@ -92,6 +108,8 @@ impl Store {
                         window: query.window(),
                         model: query.model.clone(),
                         thread: query.thread.clone(),
+                        sort: query.sort,
+                        cost: call.estimated_cost.known_subtotal.clone(),
                         time: call.time,
                         id: call.id.parse().unwrap(),
                     })

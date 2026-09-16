@@ -41,9 +41,17 @@ try {
         return result;
       }
       if(command==="usage_calls"){
-        if(Object.keys(args.query).some(key=>!["start","end","model","thread","after","limit"].includes(key))) throw "invalidQuery";
+        if(Object.keys(args.query).some(key=>!["start","end","model","thread","sort","after","limit"].includes(key))) throw "invalidQuery";
         test.requests.push(structuredClone(args.query));
-        const values=selected(args.query),offset=Number(args.query.after??0),items=values.slice(offset,offset+50);
+        const values=selected(args.query).sort((a,b)=>{
+          if(args.query.sort!=="time") {
+            const left=a.estimatedCost.knownSubtotal,right=b.estimatedCost.knownSubtotal;
+            if(left===null&&right!==null) return 1;
+            if(left!==null&&right===null) return -1;
+            if(left!==null&&right!==null&&BigInt(left)!==BigInt(right)) return (BigInt(left)<BigInt(right)?-1:1)*(args.query.sort==="costDesc"?-1:1);
+          }
+          return seconds(a.time)-seconds(b.time)||Number(a.id)-Number(b.id);
+        }),offset=Number(args.query.after??0),items=values.slice(offset,offset+50);
         const response={start:args.query.start,end:args.query.end,items,totalItems:values.length,summary:totals(values),nextCursor:offset+50<values.length?String(offset+50):null};
         if(test.hold) await new Promise(resolve=>test.held.push(resolve));
         test.completed.push(args.query);
@@ -133,8 +141,32 @@ try {
   await page.evaluate(()=>window.callsTest.held.pop()());await page.waitForFunction(()=>document.querySelectorAll(".call-card").length===27);
   await page.evaluate(()=>{window.callsTest.hold=false;window.callsTest.held.pop()();});await page.waitForFunction(count=>window.callsTest.completed.length===count+2,completed);
   assert.equal(await page.locator(".call-model").filter({hasText:"model-a"}).count(),0,"A stale invocation response never replaces the latest filters");
+  await page.evaluate(()=>window.callsTest.calls.forEach((call,index)=>{call.estimatedCost={knownSubtotal:String(index*100000000),complete:true};}));
+  await page.getByRole("button",{name:"Clear filters",exact:true}).click();
+  await page.waitForFunction(()=>document.querySelectorAll(".call-card").length===50);
+  const responses=()=>page.locator(".call-response").allTextContents();
+  await page.getByRole("combobox",{name:"Sort calls",exact:true}).selectOption("costDesc");
+  await page.waitForFunction(()=>document.querySelector(".call-response")?.textContent==="Response: response-55");
+  assert.deepEqual(await responses(),Array.from({length:50},(_,i)=>`Response: response-${55-i}`));
+  await page.evaluate(()=>{
+    const calls=window.callsTest.calls;
+    calls.push({...calls[0],id:"56",responseId:"response-56",time:{...calls[0].time,seconds:calls[0].time.seconds+1},estimatedCost:{knownSubtotal:"9900000000",complete:true}});
+    window.dashboardTest.response.evaluatedAt.seconds++;
+    window.dashboardTest.callbacks.broadcast({payload:{}});
+  });
+  await page.waitForFunction(()=>document.querySelectorAll(".call-card").length===56);
+  assert.equal((await responses())[0],"Response: response-56","Refresh inserts a more expensive call ahead of the loaded prefix");
+  assert.ok((await responses()).includes("Response: response-6"),"Refresh keeps the previously reached call despite the shifted price order");
+  await page.getByRole("combobox",{name:"Sort calls",exact:true}).selectOption("costAsc");
+  await page.waitForFunction(()=>document.querySelectorAll(".call-card").length===50&&document.querySelector(".call-response")?.textContent==="Response: response-1");
+  assert.deepEqual(await responses(),Array.from({length:50},(_,i)=>`Response: response-${i+1}`),"Changing sort resets pagination");
+  await page.getByRole("button",{name:"Load next 50 calls"}).click();
+  await page.waitForFunction(()=>document.querySelectorAll(".call-card").length===56);
+  assert.equal((await responses()).at(-1),"Response: response-56");
+  await page.getByRole("combobox",{name:"Sort calls",exact:true}).selectOption("time");
+  await page.waitForFunction(()=>document.querySelectorAll(".call-card").length===50&&document.querySelectorAll(".call-response")[1]?.textContent==="Response: response-56");
   await page.setViewportSize({width:390,height:900});
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,"Narrow dashboard has no horizontal overflow");
   assert.deepEqual(failures,[]);
-  console.log("Call inspection UI: gestures on all three charts, shared ranges, undo/reset, fixed/trailing periods, validation, call filters, paging, exact totals, text paging, escaped content and narrow layout passed.");
+  console.log("Call inspection UI: gestures, shared ranges, validation, filters, price sorting, paging, refresh retention, exact totals, text paging, escaped content and narrow layout passed.");
 } finally {await browser?.close();server.kill();}

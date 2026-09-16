@@ -6,6 +6,7 @@ import { PreserveReadingPosition } from "./PreserveReadingPosition";
 import "./call-timeline.css";
 
 type Cost = GlobalSummary["estimatedCost"];
+type CallSort = "time" | "costDesc" | "costAsc";
 type BilledCategory = { tokens: TokenCategory; estimatedCost: Cost };
 type Categories = { input: BilledCategory; cachedInput: BilledCategory; cacheWrites: BilledCategory; output: BilledCategory };
 type Call = { id: string; time: ObservationTime; threadId: string; turnId: string | null; responseId: string | null; model: string | null; effort: string | null; tokens: GlobalSummary["tokens"]; categories: Categories; estimatedCost: Cost; priceVersionId: string | null; price: Record<string, string | null> | null; categoryReason: string | null };
@@ -25,11 +26,23 @@ export function CategoryTable({ values, total, label, placeholder }: { values: C
 const compareTime = (a: ObservationTime, b: ObservationTime) => a.seconds - b.seconds || a.nanos - b.nanos;
 const inside = (time: ObservationTime, window: TimeWindow) => compareTime(time, window.start) > 0 && compareTime(time, window.end) <= 0;
 const windowKey = (window: TimeWindow) => `${exactTime(window.start)}:${exactTime(window.end)}`;
-const compareCalls = (a: Call, b: Call) => compareTime(a.time, b.time) || (BigInt(a.id) < BigInt(b.id) ? -1 : a.id === b.id ? 0 : 1);
+const compareCalls = (a: Call, b: Call, sort: CallSort) => {
+  if (sort !== "time") {
+    const left = a.estimatedCost.knownSubtotal, right = b.estimatedCost.knownSubtotal;
+    if (left === null && right !== null) return 1;
+    if (left !== null && right === null) return -1;
+    if (left !== null && right !== null) {
+      const order = BigInt(left) < BigInt(right) ? -1 : BigInt(left) > BigInt(right) ? 1 : 0;
+      if (order) return sort === "costDesc" ? -order : order;
+    }
+  }
+  return compareTime(a.time, b.time) || (BigInt(a.id) < BigInt(b.id) ? -1 : a.id === b.id ? 0 : 1);
+};
 type CallsSnapshot = { scope: string; window: string; page: CallsPage; items: Call[]; pages: number };
 
 export function CallTimeline({ window, refreshKey, filters, setFilters, onOpenPricing }: { window: TimeWindow; refreshKey: string; filters: CallFilters; setFilters: (filters: CallFilters) => void; onOpenPricing?: () => void }) {
-  const scope = JSON.stringify([filters.model, filters.thread]);
+  const [sort, setSort] = useState<CallSort>("time");
+  const scope = JSON.stringify([filters.model, filters.thread, sort]);
   const bounds = windowKey(window);
   const [snapshot, setSnapshot] = useState<CallsSnapshot | null>(null);
   const [depth, setDepth] = useState({ scope, pages: 1 });
@@ -55,12 +68,12 @@ export function CallTimeline({ window, refreshKey, filters, setFilters, onOpenPr
       const wantedPages = Math.max(pages, retained?.pages ?? 1);
       try {
         for (let index = 0; ; index++) {
-          const page: CallsPage = await invoke("usage_calls", { query: { start: window.start, end: window.end, ...filters, after, limit: 50 } });
+          const page: CallsPage = await invoke("usage_calls", { query: { start: window.start, end: window.end, ...filters, sort, after, limit: 50 } });
           if (!current()) return;
           for (const call of page.items) items.set(call.id, call);
           after = page.nextCursor;
           const last = page.items.at(-1);
-          const reachedLoaded = !lastLoaded || (last && compareCalls(last, lastLoaded) >= 0);
+          const reachedLoaded = !lastLoaded || (last && compareCalls(last, lastLoaded, sort) >= 0);
           if (!after || (index + 1 >= wantedPages && reachedLoaded)) {
             // Publish the entire loaded prefix together. Never reuse an old-window cursor.
             // Late imports may add earlier rows; keep the previously reached calls too.
@@ -85,6 +98,7 @@ export function CallTimeline({ window, refreshKey, filters, setFilters, onOpenPr
     <div className="dashboard-section-heading"><div><span className="eyebrow">SELECTED INTERVAL</span><h2 id="calls-title">Model calls</h2></div><span className="dashboard-muted">{localTime(window.start)} – {localTime(window.end)}</span></div>
     <p>One price per model invocation, including its entire tool batch. Expand a call to inspect the available text and actions inside this interval.</p>
     <form className="call-filters" onSubmit={event => { event.preventDefault(); const data = new FormData(event.currentTarget); setFilters({ model: String(data.get("model") ?? "").trim() || null, thread: String(data.get("thread") ?? "").trim() || null }); }}>
+      <label>Sort calls<select name="sort" value={sort} onChange={event => setSort(event.currentTarget.value as CallSort)}><option value="time">Time · oldest first</option><option value="costDesc">Price · highest first</option><option value="costAsc">Price · lowest first</option></select></label>
       <label>Model ID<input name="model" maxLength={512} placeholder="All models" defaultValue={filters.model ?? ""} /></label><label>Task ID<input name="thread" maxLength={512} placeholder="All tasks and subagents" defaultValue={filters.thread ?? ""} /></label><button>Filter calls</button><button type="button" onClick={event => { const form = event.currentTarget.form; if (form) { (form.elements.namedItem("model") as HTMLInputElement).value = ""; (form.elements.namedItem("thread") as HTMLInputElement).value = ""; } setFilters({ model: null, thread: null }); }}>Clear filters</button>
     </form>
     {error && <p role="alert" className="dashboard-warning">{error} <button onClick={() => setRetry(value => value + 1)}>Retry calls</button></p>}
